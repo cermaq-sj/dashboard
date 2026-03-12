@@ -4,3 +4,4 @@ duckdb
 plotly
 openpyxl
 xlrd
+streamlit-plotly-events
