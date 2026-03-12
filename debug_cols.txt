@@ -1,0 +1,3 @@
+DF Columns: ['Batch', 'Final Fecha', 'SGR', 'Days', 'SeriesName']
+Days Col: Days
+Hover Date Col: Final Fecha
