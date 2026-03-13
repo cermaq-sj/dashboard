@@ -1,6 +1,6 @@
 streamlit
 pandas
-duckdb
+duckdb==1.4.1
 plotly
 openpyxl
 xlrd

@@ -1,7 +1,6 @@
 import os
 import re
 import unicodedata
-from urllib.parse import quote_plus
 
 import duckdb
 import pandas as pd
@@ -33,8 +32,8 @@ class DBManager:
 
         if token and database:
             try:
-                safe_token = quote_plus(str(token))
-                con = duckdb.connect(f'md:{database}?motherduck_token={safe_token}')
+                con = duckdb.connect(f"md:?motherduck_token={token}")
+                con.execute(f"USE {self._quote_ident(database)}")
                 self.connection_mode = 'motherduck'
                 self.connected_db = database
                 print(f"Connected to MotherDuck database '{database}'")
