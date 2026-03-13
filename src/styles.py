@@ -51,14 +51,36 @@ def inject_styles():
         [data-testid="stSidebar"] input[type="radio"] {
             accent-color: #C9CFDA !important;
         }
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] input,
+        [data-testid="stSidebar"] [data-testid="stRadio"] input {
+            accent-color: #C9CFDA !important;
+        }
         [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"],
         [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] {
             border-color: #C9CFDA !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"] svg,
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] svg,
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"] svg path,
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] svg path,
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] svg,
+        [data-testid="stSidebar"] [data-testid="stRadio"] svg {
+            fill: #C9CFDA !important;
+            stroke: #C9CFDA !important;
+            color: #C9CFDA !important;
         }
         [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"][aria-checked="true"],
         [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"][aria-checked="true"] {
             background-color: #C9CFDA !important;
             border-color: #C9CFDA !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] [aria-checked="true"],
+        [data-testid="stSidebar"] [data-testid="stRadio"] [aria-checked="true"],
+        [data-testid="stSidebar"] button[role="checkbox"][aria-checked="true"],
+        [data-testid="stSidebar"] button[role="radio"][aria-checked="true"] {
+            background-color: #C9CFDA !important;
+            border-color: #C9CFDA !important;
+            color: #1A1D24 !important;
         }
         [data-testid="stSidebar"] [role="slider"] {
             background: var(--cermaq-sidebar-accent) !important;
@@ -90,6 +112,15 @@ def inject_styles():
             background-color: var(--cermaq-sidebar-accent) !important;
             border-color: var(--cermaq-sidebar-accent) !important;
             color: #FFFFFF !important;
+        }
+        /* Keep checkbox/radio widgets light gray even with generic pressed styles */
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] button[aria-pressed="true"],
+        [data-testid="stSidebar"] [data-testid="stRadio"] button[aria-pressed="true"],
+        [data-testid="stSidebar"] button[role="checkbox"][aria-pressed="true"],
+        [data-testid="stSidebar"] button[role="radio"][aria-pressed="true"] {
+            background-color: #C9CFDA !important;
+            border-color: #C9CFDA !important;
+            color: #1A1D24 !important;
         }
         
         /* KPI Card Styling */
