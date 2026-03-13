@@ -557,8 +557,7 @@ class DBManager:
         - Alevinaje: sheet_name + Day (normalizado a Fecha)
         - Smolt: sheet_name + Day (normalizado a Fecha)
         - Metales: sheet_name + Fecha + Horario + Lugar de muestreo
-        - i-STAT: Muestreo + Departamento + Fecha Muestreo + Unidad + Batch + _istat_row_idx
-        - Alertas por Estado: Muestreo + Parámetro + Estado
+        - Se excluyen i-STAT y Alertas por Estado por rendimiento
         """
         try:
             sheets_dict = pd.read_excel(file, sheet_name=None)
@@ -568,6 +567,19 @@ class DBManager:
 
         total_rows = 0
         sheet_summaries = {}
+        excluded_sheets = {'i-stat', 'i stat', 'alertas por estado'}
+
+        # Cleanup legacy rows for excluded sheets if they exist in persisted table.
+        if self._table_exists(table_name):
+            try:
+                existing_cols = [c[0] for c in self.con.execute(f"DESCRIBE {self._quote_ident(table_name)}").fetchall()]
+                if 'sheet_name' in existing_cols:
+                    self.con.execute(
+                        f"DELETE FROM {self._quote_ident(table_name)} "
+                        "WHERE LOWER(TRIM(sheet_name)) IN ('i-stat', 'i stat', 'alertas por estado')"
+                    )
+            except Exception:
+                pass
 
         for sheet_name, raw_df in sheets_dict.items():
             if raw_df is None or raw_df.empty:
@@ -576,6 +588,9 @@ class DBManager:
             df = raw_df.copy()
             df.columns = [str(c).strip() for c in df.columns]
             sheet_norm = self._normalize(sheet_name)
+
+            if sheet_norm in excluded_sheets:
+                continue
 
             df['sheet_name'] = sheet_name
             df['source_file'] = 'Mediciones'
@@ -613,46 +628,6 @@ class DBManager:
                     key_cols = ['sheet_name', 'Fecha', 'Horario', 'Lugar de muestreo']
                 else:
                     key_cols = ['sheet_name', 'Fecha']
-
-            elif sheet_norm in ('i-stat', 'i stat'):
-                rename_candidates = {
-                    'Muestreo': ['muestreo'],
-                    'Departamento': ['departamento'],
-                    'Fecha Muestreo': ['fecha muestreo', 'fecha'],
-                    'Unidad': ['unidad'],
-                    'Batch': ['batch'],
-                }
-                for canonical, candidates in rename_candidates.items():
-                    found = self._find_column(df.columns, exact_norm=candidates, contains_all=[candidates[0]])
-                    if found and found != canonical:
-                        df = df.rename(columns={found: canonical})
-
-                if 'Fecha Muestreo' in df.columns:
-                    df['Fecha Muestreo'] = pd.to_datetime(df['Fecha Muestreo'], errors='coerce')
-
-                base_keys = ['Muestreo', 'Departamento', 'Fecha Muestreo', 'Unidad', 'Batch']
-                missing = [k for k in base_keys if k not in df.columns]
-                if missing:
-                    raise ValueError(f"i-STAT: faltan columnas clave: {missing}")
-
-                df['_istat_row_idx'] = df.groupby(base_keys, dropna=False).cumcount() + 1
-                key_cols = base_keys + ['_istat_row_idx']
-                replace_on_keys = base_keys
-
-            elif sheet_norm == 'alertas por estado':
-                rename_candidates = {
-                    'Muestreo': ['muestreo'],
-                    'Parámetro': ['parametro', 'parámetro'],
-                    'Estado': ['estado'],
-                    'Nivel de Riesgo': ['nivel de riesgo'],
-                    'Explicación': ['explicacion', 'explicación'],
-                }
-                for canonical, candidates in rename_candidates.items():
-                    found = self._find_column(df.columns, exact_norm=candidates, contains_all=[candidates[0]])
-                    if found and found != canonical:
-                        df = df.rename(columns={found: canonical})
-
-                key_cols = ['Muestreo', 'Parámetro', 'Estado']
 
             else:
                 generic_date = self._find_column(df.columns, exact_norm=['fecha'], contains_all=['fecha'])
@@ -863,7 +838,16 @@ class DBManager:
                 return {}
             
             # Get sheets
-            sheets = [r[0] for r in self.con.execute(f"SELECT DISTINCT sheet_name FROM {table_name} WHERE sheet_name IS NOT NULL").fetchall()]
+            sheets = [
+                r[0] for r in self.con.execute(
+                    f"""
+                    SELECT DISTINCT sheet_name
+                    FROM {table_name}
+                    WHERE sheet_name IS NOT NULL
+                      AND LOWER(TRIM(sheet_name)) NOT IN ('i-stat', 'alertas por estado')
+                    """
+                ).fetchall()
+            ]
             
             # Identify numeric columns for variable detection
             desc = self.con.execute(f"DESCRIBE {table_name}").df()
@@ -923,7 +907,10 @@ class DBManager:
                 return pd.DataFrame()
 
             # 2. Filters
-            where_clauses = ["source_file ILIKE '%Mediciones%'"]
+            where_clauses = [
+                "source_file ILIKE '%Mediciones%'",
+                "LOWER(TRIM(sheet_name)) NOT IN ('i-stat', 'alertas por estado')",
+            ]
             
             # Date Range
             if filters.get('mediciones_date_range'):
@@ -1005,7 +992,12 @@ class DBManager:
             if not col_date: 
                 return None, None
                 
-            query = f"SELECT MIN(\"{col_date}\"), MAX(\"{col_date}\") FROM {table_name} WHERE source_file ILIKE '%Mediciones%'"
+            query = (
+                f"SELECT MIN(\"{col_date}\"), MAX(\"{col_date}\") "
+                f"FROM {table_name} "
+                "WHERE source_file ILIKE '%Mediciones%' "
+                "AND LOWER(TRIM(sheet_name)) NOT IN ('i-stat', 'alertas por estado')"
+            )
             return self.con.execute(query).fetchone()
         except:
              return None, None
