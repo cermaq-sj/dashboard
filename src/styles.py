@@ -58,6 +58,13 @@ def inject_styles():
         [data-testid="stSidebar"] [data-baseweb="slider"] > div > div > div {
             background-color: var(--cermaq-sidebar-accent) !important;
         }
+        /* Cultivo days slider tick/value labels in light gray */
+        [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid*="TickBar"],
+        [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid*="TickBar"] *,
+        [data-testid="stSidebar"] [data-testid="stSlider"] p,
+        [data-testid="stSidebar"] [data-testid="stSlider"] span {
+            color: #C9CFDA !important;
+        }
         [data-testid="stSidebar"] [data-baseweb="select"] > div {
             border-color: #2E3E45 !important;
         }
