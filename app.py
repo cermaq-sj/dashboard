@@ -877,7 +877,7 @@ def main():
                     st.caption("Gráfico independiente (Rango de fechas propio)")
                     
                     # Chart controls row
-                    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
+                    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 0.9, 1])
                     with ctrl_col1:
                         med_chart_type = st.radio(
                             "Tipo de Gráfico (Mediciones)",
@@ -887,13 +887,13 @@ def main():
                             key="med_chart_type"
                         )
                     with ctrl_col2:
-                        med_avg = st.checkbox("📊 Promediar", value=filters.get('mediciones_avg', False), key="med_avg_main",
-                                             help="Promedia valores del mismo día/lugar")
-                        if med_avg:
-                            filters['mediciones_avg'] = True
+                        if filters.get('mediciones_avg', False):
+                            st.caption("📊 Promediar: Activo")
+                        else:
+                            st.caption("📊 Promediar: Inactivo")
                     with ctrl_col3:
                         med_unir = st.checkbox("🔗 Unir variables", value=False, key="med_unir_vars",
-                                              help="Muestra todas las variables en un solo gráfico")
+                                               help="Muestra todas las variables en un solo gráfico")
                         med_axes = False
                         if med_unir:
                             med_axes = st.checkbox("🎚️ Ejes independientes", value=True, key="med_indep_axes",

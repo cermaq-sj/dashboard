@@ -372,16 +372,13 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
     if mediciones_meta:
         filters['mediciones_places'] = []
         filters['mediciones_vars'] = [] # Separate list for the new chart
-        
+        filters['mediciones_avg'] = False
 
-        
-        # Average toggle
-        filters['mediciones_avg'] = st.sidebar.checkbox(
-            "📊 Promediar por día",
-            value=False,
-            key="med_avg",
-            help="Promedia los valores del mismo día y lugar de muestreo"
-        )
+        if 'med_avg_sidebar' not in st.session_state:
+            st.session_state.med_avg_sidebar = False
+        if 'med_avg_autoset_done' not in st.session_state:
+            st.session_state.med_avg_autoset_done = False
+
         # Sort sheets to prevent UI jumping
         sorted_sheets = sorted(mediciones_meta.keys())
         
@@ -405,6 +402,20 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
                     # Store selected places
                     if places_sel:
                         filters['mediciones_places'].extend(places_sel)
+
+                        # Show and auto-enable "Promediar" the first time a place is selected.
+                        if not st.session_state.get('med_avg_autoset_done', False):
+                            st.session_state.med_avg_sidebar = True
+                            st.session_state.med_avg_autoset_done = True
+
+                        filters['mediciones_avg'] = st.checkbox(
+                            "📊 Promediar por día",
+                            key="med_avg_sidebar",
+                            help="Promedia los valores del mismo día y lugar de muestreo"
+                        )
+                    else:
+                        st.session_state.med_avg_autoset_done = False
+                        st.session_state.med_avg_sidebar = False
                 else:
                     # Automatically select 'General' or other available places for non-Metales sheets
                     if places:
