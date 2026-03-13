@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import json
+import datetime as dt
 from src.filters import render_filters
 from src.data_processing import load_and_clean_data
 from src.db_manager import DBManager
@@ -28,6 +30,69 @@ def safe_plotly_events(fig, key: str):
         select_event=False,
         override_width="100%",
         key=key,
+    )
+
+
+def _to_jsonable(value):
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, set):
+        return sorted(_to_jsonable(v) for v in value)
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    try:
+        if hasattr(value, 'item'):
+            return value.item()
+    except Exception:
+        pass
+    return value
+
+
+def _cache_key(payload) -> str:
+    return json.dumps(_to_jsonable(payload), ensure_ascii=True, sort_keys=True, separators=(',', ':'))
+
+
+@st.cache_data(ttl=600, max_entries=64, show_spinner=False)
+def _cached_mediciones_metadata(_db_manager, data_version: str):
+    return _db_manager.get_mediciones_metadata()
+
+
+@st.cache_data(ttl=600, max_entries=64, show_spinner=False)
+def _cached_mediciones_date_range(_db_manager, data_version: str):
+    return _db_manager.get_mediciones_date_range()
+
+
+@st.cache_data(ttl=600, max_entries=64, show_spinner=False)
+def _cached_kpi_thresholds(_db_manager, data_version: str):
+    return _db_manager.get_kpi_thresholds()
+
+
+@st.cache_data(ttl=600, max_entries=64, show_spinner=False)
+def _cached_proyecciones_metadata(_db_manager, data_version: str):
+    return _db_manager.get_proyecciones_metadata()
+
+
+@st.cache_data(ttl=120, max_entries=8, show_spinner=False)
+def _cached_filtered_data(_db_manager, data_version: str, filters_key: str):
+    return _db_manager.get_filtered_data(json.loads(filters_key))
+
+
+@st.cache_data(ttl=120, max_entries=16, show_spinner=False)
+def _cached_mediciones_chart_data(_db_manager, data_version: str, filters_key: str):
+    return _db_manager.get_mediciones_chart_data(json.loads(filters_key))
+
+
+@st.cache_data(ttl=180, max_entries=16, show_spinner=False)
+def _cached_proyecciones_data(_db_manager, data_version: str, request_key: str):
+    req = json.loads(request_key)
+    return _db_manager.get_proyecciones_data(
+        batches=req.get('batches'),
+        variables=req.get('variables'),
+        date_range=req.get('date_range'),
     )
 
 # --- Page Config ---
@@ -130,6 +195,8 @@ def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
             if 'param_config' in st.session_state:
                 del st.session_state.param_config
 
+            st.cache_data.clear()
+
             st.session_state.data_loaded = st.session_state.db_manager.has_any_data()
             hide_loading_screen(loading)
 
@@ -149,6 +216,12 @@ def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
 def main():
     inject_styles()
     db_status = st.session_state.db_manager.get_connection_status()
+    data_version = _cache_key({
+        'rev': db_status.get('data_revision', 0),
+        'rows': db_status.get('rows', {}),
+        'mode': db_status.get('mode', 'local'),
+        'db': db_status.get('database', ':memory:'),
+    })
     st.session_state.data_loaded = db_status.get('has_data', False)
     
     # Initialize View State
@@ -228,10 +301,10 @@ def main():
             process_uploaded_files(uploaded_files_update, "Procesar archivos", "process_update_files_btn")
 
         # Render filters regardless; if there is no data, they appear empty without blocking access.
-        med_meta = st.session_state.db_manager.get_mediciones_metadata()
-        med_bounds = st.session_state.db_manager.get_mediciones_date_range()
-        kpi_thresholds = get_kpi_config_thresholds() or st.session_state.db_manager.get_kpi_thresholds()
-        proj_meta = st.session_state.db_manager.get_proyecciones_metadata()
+        med_meta = _cached_mediciones_metadata(st.session_state.db_manager, data_version)
+        med_bounds = _cached_mediciones_date_range(st.session_state.db_manager, data_version)
+        kpi_thresholds = get_kpi_config_thresholds() or _cached_kpi_thresholds(st.session_state.db_manager, data_version)
+        proj_meta = _cached_proyecciones_metadata(st.session_state.db_manager, data_version)
         filters = render_filters(
             st.session_state.db_manager,
             mediciones_meta=med_meta,
@@ -251,7 +324,11 @@ def main():
             
             # Execute Query
             with st.spinner("Consultando..."):
-                filtered_df = st.session_state.db_manager.get_filtered_data(filters)
+                filtered_df = _cached_filtered_data(
+                    st.session_state.db_manager,
+                    data_version,
+                    _cache_key(filters),
+                )
             
             if not filtered_df.empty:
                 # Rename columns for display
@@ -460,10 +537,14 @@ def main():
                         selected_proj_vars = filters.get('proyecciones_vars', [])
                         proj_df_for_chart = None
                         if selected_proj_vars:
-                            proj_df_for_chart = st.session_state.db_manager.get_proyecciones_data(
-                                batches=filters.get('batches', []),
-                                variables=selected_proj_vars,
-                                date_range=filters.get('date_range')
+                            proj_df_for_chart = _cached_proyecciones_data(
+                                st.session_state.db_manager,
+                                data_version,
+                                _cache_key({
+                                    'batches': filters.get('batches', []),
+                                    'variables': selected_proj_vars,
+                                    'date_range': filters.get('date_range'),
+                                }),
                             )
                             if proj_df_for_chart is not None and proj_df_for_chart.empty:
                                 proj_df_for_chart = None
@@ -785,7 +866,17 @@ def main():
                             med_axes = st.checkbox("🎚️ Ejes independientes", value=True, key="med_indep_axes",
                                                   help="Cada variable tendrá su propia escala Y")
                     
-                    med_df = st.session_state.db_manager.get_mediciones_chart_data(filters)
+                    med_query_filters = {
+                        'mediciones_places': filters.get('mediciones_places', []),
+                        'mediciones_vars': filters.get('mediciones_vars', []),
+                        'mediciones_date_range': filters.get('mediciones_date_range', []),
+                        'mediciones_avg': filters.get('mediciones_avg', False),
+                    }
+                    med_df = _cached_mediciones_chart_data(
+                        st.session_state.db_manager,
+                        data_version,
+                        _cache_key(med_query_filters),
+                    )
                     
                     if not med_df.empty:
                         fig_med = create_main_chart(

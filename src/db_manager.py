@@ -13,7 +13,11 @@ class DBManager:
         self.connection_mode = 'local'
         self.connected_db = ':memory:'
         self.connection_error = None
+        self.data_revision = 0
         self.con = self._connect()
+
+    def _bump_revision(self):
+        self.data_revision += 1
 
     def _sanitize_secret(self, value):
         if value is None:
@@ -202,6 +206,7 @@ class DBManager:
             'mode': self.connection_mode,
             'database': self.connected_db,
             'connection_error': self.connection_error,
+            'data_revision': self.data_revision,
             'has_data': self.has_any_data(),
             'rows': {
                 'fishtalk_data': self._table_row_count('fishtalk_data'),
@@ -548,7 +553,10 @@ class DBManager:
                 "(Final Fecha, Batch/Lote, Departamento, Unidad, Final Days since first input, Final Número)."
             )
 
-        return self._upsert_dataframe(df, table_name=table_name, key_columns=key_cols)
+        summary = self._upsert_dataframe(df, table_name=table_name, key_columns=key_cols)
+        if summary.get('received', 0) > 0:
+            self._bump_revision()
+        return summary
 
     def ingest_mediciones_data(self, file, table_name: str = 'mediciones_data'):
         """
@@ -649,6 +657,8 @@ class DBManager:
             total_rows += summary.get('received', 0)
 
         print(f"Successfully ingested/updated {total_rows} rows from Mediciones across {len(sheet_summaries)} sheets")
+        if total_rows > 0:
+            self._bump_revision()
         return {'total_received': total_rows, 'sheets': sheet_summaries}
 
     def query(self, sql: str) -> pd.DataFrame:
@@ -1718,6 +1728,8 @@ class DBManager:
             file.seek(0)
             sheets_dict = pd.read_excel(file, sheet_name=None)
 
+        changed = False
+
         # --- 1. KPIs Sheet ---
         if 'KPIs' in sheets_dict:
             kpi_df = sheets_dict['KPIs'].copy()
@@ -1741,6 +1753,7 @@ class DBManager:
                     self.con.register('_tmp_kpi', clean_kpi)
                     self.con.execute("CREATE OR REPLACE TABLE kpi_thresholds AS SELECT * FROM _tmp_kpi")
                     self.con.unregister('_tmp_kpi')
+                    changed = True
                     print(f"Ingested {len(clean_kpi)} KPI thresholds")
                 except Exception as e:
                     print(f"Error ingesting KPI thresholds: {e}")
@@ -1779,9 +1792,13 @@ class DBManager:
                 self.con.register('_tmp_proj', proj_df)
                 self.con.execute("CREATE OR REPLACE TABLE proyecciones_data AS SELECT * FROM _tmp_proj")
                 self.con.unregister('_tmp_proj')
+                changed = True
                 print(f"Ingested {len(proj_df)} projection rows across {len(all_proj)} batches")
             except Exception as e:
                 print(f"Error ingesting projections: {e}")
+
+        if changed:
+            self._bump_revision()
 
     def get_kpi_thresholds(self):
         """
