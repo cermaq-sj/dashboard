@@ -1,6 +1,7 @@
 import os
 import re
 import unicodedata
+import json
 from collections.abc import Mapping
 from urllib.parse import quote
 
@@ -223,6 +224,47 @@ class DBManager:
                 'proyecciones_data': self._table_row_count('proyecciones_data'),
             },
         }
+
+    def _ensure_settings_table(self):
+        self.con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_settings (
+                config_key VARCHAR,
+                config_json VARCHAR,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+
+    def load_app_setting(self, config_key: str):
+        """Load persisted JSON config from DB settings table."""
+        try:
+            self._ensure_settings_table()
+            row = self.con.execute(
+                "SELECT config_json FROM dashboard_settings WHERE config_key = ? ORDER BY updated_at DESC LIMIT 1",
+                [config_key],
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            return json.loads(row[0])
+        except Exception as e:
+            print(f"Error loading app setting '{config_key}': {e}")
+            return None
+
+    def save_app_setting(self, config_key: str, payload) -> bool:
+        """Persist JSON config into DB settings table."""
+        try:
+            self._ensure_settings_table()
+            payload_json = json.dumps(payload, ensure_ascii=False)
+            self.con.execute("DELETE FROM dashboard_settings WHERE config_key = ?", [config_key])
+            self.con.execute(
+                "INSERT INTO dashboard_settings (config_key, config_json, updated_at) VALUES (?, ?, NOW())",
+                [config_key, payload_json],
+            )
+            return True
+        except Exception as e:
+            print(f"Error saving app setting '{config_key}': {e}")
+            return False
 
     def _align_incoming_column_names(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
         if not self._table_exists(table_name):

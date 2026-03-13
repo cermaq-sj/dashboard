@@ -7,7 +7,7 @@ from src.filters import render_filters
 from src.data_processing import load_and_clean_data
 from src.db_manager import DBManager
 from src.visualizations import create_main_chart
-from src.config_params import render_config_tab, get_range_filters, get_alias_map, get_kpi_config_thresholds
+from src.config_params import render_config_tab, get_range_filters, get_alias_map, get_kpi_config_thresholds, ensure_runtime_config
 from src.styles import inject_styles, inject_logo, show_loading_screen, hide_loading_screen, show_view_transition
 import traceback
 import unicodedata
@@ -194,6 +194,7 @@ def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
 
             if 'param_config' in st.session_state:
                 del st.session_state.param_config
+            st.session_state._param_config_runtime_initialized = False
 
             st.cache_data.clear()
             st.session_state.applied_filters = None
@@ -233,6 +234,8 @@ def main():
         st.session_state.current_profile = "maestro"
     if not st.session_state.get('data_loaded') and st.session_state.db_manager.has_any_data():
         st.session_state.data_loaded = True
+
+    ensure_runtime_config(st.session_state.db_manager)
 
     # --- Header ---
     if st.session_state.current_view == "Main":

@@ -2,7 +2,13 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, time
-from src.config_params import get_alias_map, get_hidden_variables, get_variable_group_overrides
+from src.config_params import (
+    get_alias_map,
+    get_hidden_variables,
+    get_variable_group_overrides,
+    get_variable_order_overrides,
+    get_sidebar_group_order,
+)
 
 def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None, kpi_thresholds=None, proyecciones_meta=None):
     """
@@ -143,7 +149,10 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
     }
     
     # Classify available columns
-    grouped_cols = {k: [] for k in variable_groups}
+    all_sidebar_groups = get_sidebar_group_order('fishtalk_data', include_hidden=True)
+    if not all_sidebar_groups:
+        all_sidebar_groups = list(variable_groups.keys()) + ["Mortalidad por Causa", "Otras Variables"]
+    grouped_cols = {k: [] for k in all_sidebar_groups}
     other_cols = []
     
     # Exclude structural columns
@@ -167,10 +176,7 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
         return ''.join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
     # Special handling for Mediciones Columns
-    # Use provided metadata (already computed/cached in app) to avoid extra queries.
-    mediciones_meta = mediciones_meta or {}
     mediciones_keywords = ['aluminio', 'cobre', 'hierro', 'plomo', 'horario', 'lugar de muestreo']
-    mediciones_cols = []
 
     for col in all_cols:
         col_norm = normalize(col)
@@ -198,7 +204,6 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
         is_mediciones = any(normalize(k) in col_norm for k in mediciones_keywords)
         
         if is_mediciones:
-            mediciones_cols.append(col)
             continue # Don't add to other groups
 
         found = False
@@ -236,20 +241,32 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
         if col not in grouped_cols[new_group]:
             grouped_cols[new_group].append(col)
 
+    # Move uncategorized variables into "Otras Variables" group.
+    grouped_cols.setdefault("Otras Variables", [])
+    for col in other_cols:
+        if col not in grouped_cols["Otras Variables"]:
+            grouped_cols["Otras Variables"].append(col)
+    other_cols = []
+
+    def _add_group_var(group_name, variable_name):
+        grouped_cols.setdefault(group_name, [])
+        if variable_name not in grouped_cols[group_name]:
+            grouped_cols[group_name].append(variable_name)
+
     # Inject our dynamic column so the user can select it
     # We put it in the Economic group
-    grouped_cols["Económico"].append("FCR Económico Acumulado")
-    grouped_cols["Productivos"].append("FCR Biológico Acumulado")
-    grouped_cols["Productivos"].append("GF3 Acumulado")
-    grouped_cols["Productivos"].append("SGR Acumulado")
-    grouped_cols["Productivos"].append("SFR Acumulado")
-    grouped_cols["Productivos"].append("% Mortalidad Acumulada")
-    grouped_cols["Productivos"].append("% Mortalidad diaria")
-    grouped_cols["Productivos"].append("% Pérdida Acumulada")
-    grouped_cols["Productivos"].append("Pérdida diaria %")
-    grouped_cols["Productivos"].append("% Eliminación Acumulada")
-    grouped_cols["Productivos"].append("Eliminación diaria %")
-    grouped_cols["Productivos"].append("Peso promedio")
+    _add_group_var("Económico", "FCR Económico Acumulado")
+    _add_group_var("Productivos", "FCR Biológico Acumulado")
+    _add_group_var("Productivos", "GF3 Acumulado")
+    _add_group_var("Productivos", "SGR Acumulado")
+    _add_group_var("Productivos", "SFR Acumulado")
+    _add_group_var("Productivos", "% Mortalidad Acumulada")
+    _add_group_var("Productivos", "% Mortalidad diaria")
+    _add_group_var("Productivos", "% Pérdida Acumulada")
+    _add_group_var("Productivos", "Pérdida diaria %")
+    _add_group_var("Productivos", "% Eliminación Acumulada")
+    _add_group_var("Productivos", "Eliminación diaria %")
+    _add_group_var("Productivos", "Peso promedio")
 
     # Mortality by Cause group
     cause_names = [
@@ -291,6 +308,7 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
     
     # Get alias map for display
     alias_map = get_alias_map('fishtalk_data')
+    order_map = get_variable_order_overrides('fishtalk_data')
     
     def _fmt(col):
         base_name = alias_map.get(col, col)
@@ -329,16 +347,17 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
     st.session_state.trio_was_selected = current_has_trio
 
     # 1. Standard Groups
-    for group, cols in grouped_cols.items():
+    visible_groups = get_sidebar_group_order('fishtalk_data', include_hidden=False)
+    if not visible_groups:
+        visible_groups = [g for g in grouped_cols.keys()]
+
+    for group in visible_groups:
+        cols = grouped_cols.get(group, [])
         if cols:
+            sorted_cols = sorted(cols, key=lambda c: (order_map.get(c, 999999), _fmt(c).lower()))
             with st.sidebar.expander(group, expanded=False):
-                sel = st.multiselect("Seleccionar", options=sorted(cols), format_func=_fmt, key=f"group_{group}", label_visibility="collapsed")
+                sel = st.multiselect("Seleccionar", options=sorted_cols, format_func=_fmt, key=f"group_{group}", label_visibility="collapsed")
                 selected_vars.extend(sel)
-            
-    if other_cols:
-        with st.sidebar.expander("Otras Variables"):
-            sel = st.multiselect("Seleccionar", options=sorted(other_cols))
-            selected_vars.extend(sel)
 
     # Add FCR/GF3/SGR View Toggle directly to the sidebar if an Acumulado is selected
     has_cause_metric = any(v.startswith("% Mortalidad") and (v.endswith("Diaria") or v.endswith("Acumulada")) and v not in ("% Mortalidad diaria", "% Mortalidad Acumulada") for v in selected_vars)
