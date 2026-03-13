@@ -300,6 +300,10 @@ def main():
         if 'applied_filters_key' not in st.session_state:
             st.session_state.applied_filters_key = None
 
+        with st.sidebar:
+            apply_clicked = st.button("✅ Listo", type="secondary", key="apply_filters_btn", use_container_width=True)
+            st.markdown("---")
+
         with st.sidebar.expander("🔄 Cargar / Actualizar datos", expanded=not st.session_state.data_loaded):
             st.caption("Sube nuevos archivos para actualizar la base persistente.")
             uploaded_files_update = st.file_uploader(
@@ -327,10 +331,6 @@ def main():
         draft_filters_key = _cache_key(draft_filters)
         applied_filters = st.session_state.get('applied_filters')
         applied_filters_key = st.session_state.get('applied_filters_key')
-
-        with st.sidebar:
-            st.markdown("---")
-            apply_clicked = st.button("✅ Listo", type="secondary", key="apply_filters_btn", use_container_width=True)
 
         if apply_clicked:
             st.session_state.applied_filters = copy.deepcopy(draft_filters)
