@@ -117,6 +117,21 @@ def inject_styles():
         }
 
         /* Specific fix: 'Todos los departamentos' checkbox tick */
+        [data-testid="stSidebar"] input[aria-label="Todos los departamentos"] {
+            accent-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] input[aria-label="Todos los departamentos"] + div {
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] input[aria-label="Todos los departamentos"]:checked + div {
+            background-color: var(--cermaq-sidebar-accent) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] input[aria-label="Todos los departamentos"]:checked + div svg,
+        [data-testid="stSidebar"] input[aria-label="Todos los departamentos"]:checked + div svg path {
+            fill: #FFFFFF !important;
+            stroke: #FFFFFF !important;
+        }
         [data-testid="stSidebar"] .st-key-all_depts input[type="checkbox"] {
             accent-color: var(--cermaq-sidebar-accent) !important;
         }
