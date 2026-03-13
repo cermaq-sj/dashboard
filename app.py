@@ -174,6 +174,8 @@ def main():
                      st.caption("💻 Local")
                      if db_status.get('connection_error'):
                          st.caption("⚠️ Revisa Secrets de MotherDuck")
+                         with st.expander("Detalle conexión", expanded=False):
+                             st.code(str(db_status.get('connection_error')))
             else:
                  st.markdown("⚪ <span style='color:#A0AEC0'>Esperando datos</span>", unsafe_allow_html=True)
                  

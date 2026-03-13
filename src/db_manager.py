@@ -2,6 +2,7 @@ import os
 import re
 import unicodedata
 from collections.abc import Mapping
+from urllib.parse import quote
 
 import duckdb
 import pandas as pd
@@ -75,37 +76,51 @@ class DBManager:
 
         if token:
             errors = []
+            token_candidates = []
+            raw_token = token.strip()
+            encoded_token = quote(raw_token, safe='')
+            token_candidates.append(raw_token)
+            if encoded_token != raw_token:
+                token_candidates.append(encoded_token)
 
-            if database:
+            target_db = database or 'my_db'
+
+            dsn_candidates = []
+            for tk in token_candidates:
+                dsn_candidates.extend([
+                    (f"md:{target_db}?motherduck_token={tk}", target_db),
+                    (f"motherduck:{target_db}?motherduck_token={tk}", target_db),
+                    (f"md:?motherduck_token={tk}", target_db),
+                    (f"motherduck:?motherduck_token={tk}", target_db),
+                ])
+
+            for dsn, db_for_use in dsn_candidates:
+                con = None
                 try:
-                    con = duckdb.connect(f"md:{database}?motherduck_token={token}")
+                    con = duckdb.connect(dsn)
+
+                    if dsn.startswith('md:?') or dsn.startswith('motherduck:?'):
+                        try:
+                            con.execute(f"CREATE DATABASE IF NOT EXISTS {self._quote_ident(db_for_use)}")
+                        except Exception:
+                            pass
+                        con.execute(f"USE {self._quote_ident(db_for_use)}")
+
                     self.connection_mode = 'motherduck'
-                    self.connected_db = database
+                    self.connected_db = db_for_use
                     self.connection_error = None
-                    print(f"Connected to MotherDuck database '{database}'")
+                    print(f"Connected to MotherDuck database '{db_for_use}'")
                     return con
                 except Exception as e:
-                    errors.append(f"connect_db_failed({type(e).__name__})")
+                    try:
+                        if con is not None:
+                            con.close()
+                    except Exception:
+                        pass
+                    errors.append(f"{dsn.split('?')[0]}:{type(e).__name__}:{str(e)[:120]}")
 
-            try:
-                con = duckdb.connect(f"md:?motherduck_token={token}")
-                target_db = database or 'my_db'
-
-                try:
-                    con.execute(f"CREATE DATABASE IF NOT EXISTS {self._quote_ident(target_db)}")
-                except Exception:
-                    pass
-
-                con.execute(f"USE {self._quote_ident(target_db)}")
-                self.connection_mode = 'motherduck'
-                self.connected_db = target_db
-                self.connection_error = None
-                print(f"Connected to MotherDuck database '{target_db}'")
-                return con
-            except Exception as e:
-                errors.append(f"connect_or_use_failed({type(e).__name__})")
-                self.connection_error = '; '.join(errors)
-                print(f"MotherDuck connection failed, falling back to local memory DB: {self.connection_error}")
+            self.connection_error = ' | '.join(errors)
+            print(f"MotherDuck connection failed, falling back to local memory DB: {self.connection_error}")
         else:
             self.connection_error = 'missing_motherduck_token'
 
