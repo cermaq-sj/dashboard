@@ -266,6 +266,182 @@ class DBManager:
             print(f"Error saving app setting '{config_key}': {e}")
             return False
 
+    def _version_tables(self):
+        return ['fishtalk_data', 'mediciones_data', 'kpi_thresholds', 'proyecciones_data']
+
+    def _ensure_versions_table(self):
+        self.con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ingestion_versions (
+                version_id VARCHAR,
+                created_at TIMESTAMP DEFAULT NOW(),
+                reason VARCHAR,
+                source_files_json VARCHAR,
+                row_counts_json VARCHAR
+            )
+            """
+        )
+
+    def _snapshot_table_name(self, table_name: str, version_id: str) -> str:
+        safe_version = re.sub(r'[^a-zA-Z0-9_]', '_', str(version_id))
+        return f"snapshot__{table_name}__{safe_version}"
+
+    def _has_snapshot_table(self, table_name: str, version_id: str) -> bool:
+        return self._table_exists(self._snapshot_table_name(table_name, version_id))
+
+    def list_data_versions(self, limit: int = 25) -> list:
+        """Returns latest snapshot versions for manual restore UI."""
+        try:
+            self._ensure_versions_table()
+            rows = self.con.execute(
+                """
+                SELECT version_id, created_at, reason, source_files_json, row_counts_json
+                FROM ingestion_versions
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                [max(1, int(limit))],
+            ).fetchall()
+        except Exception as e:
+            print(f"Error listing data versions: {e}")
+            return []
+
+        out = []
+        for version_id, created_at, reason, source_files_json, row_counts_json in rows:
+            try:
+                source_files = json.loads(source_files_json) if source_files_json else []
+            except Exception:
+                source_files = []
+            try:
+                row_counts = json.loads(row_counts_json) if row_counts_json else {}
+            except Exception:
+                row_counts = {}
+
+            out.append({
+                'version_id': version_id,
+                'created_at': created_at,
+                'reason': reason or '',
+                'source_files': source_files,
+                'row_counts': row_counts,
+            })
+        return out
+
+    def _cleanup_old_versions(self, keep_last: int = 10):
+        try:
+            self._ensure_versions_table()
+            rows = self.con.execute(
+                """
+                SELECT version_id
+                FROM ingestion_versions
+                GROUP BY version_id
+                ORDER BY MAX(created_at) DESC
+                """
+            ).fetchall()
+        except Exception as e:
+            print(f"Error loading versions for cleanup: {e}")
+            return
+
+        version_ids = [r[0] for r in rows if r and r[0]]
+        if len(version_ids) <= keep_last:
+            return
+
+        for old_version in version_ids[keep_last:]:
+            for tbl in self._version_tables():
+                snap_table = self._snapshot_table_name(tbl, old_version)
+                try:
+                    self.con.execute(f"DROP TABLE IF EXISTS {self._quote_ident(snap_table)}")
+                except Exception:
+                    pass
+            try:
+                self.con.execute("DELETE FROM ingestion_versions WHERE version_id = ?", [old_version])
+            except Exception:
+                pass
+
+    def create_data_snapshot(self, reason: str = 'manual', source_files=None, keep_last: int = 10):
+        """
+        Create a full snapshot of active data tables before updates/restores.
+        Returns version_id or None when no data tables exist.
+        """
+        source_files = source_files or []
+        existing_tables = [t for t in self._version_tables() if self._table_exists(t)]
+        if not existing_tables:
+            return None
+
+        self._ensure_versions_table()
+
+        version_id = pd.Timestamp.utcnow().strftime('v%Y%m%d_%H%M%S_%f')
+        row_counts = {}
+
+        try:
+            for tbl in self._version_tables():
+                snap_table = self._snapshot_table_name(tbl, version_id)
+                if self._table_exists(tbl):
+                    self.con.execute(
+                        f"CREATE OR REPLACE TABLE {self._quote_ident(snap_table)} AS "
+                        f"SELECT * FROM {self._quote_ident(tbl)}"
+                    )
+                    row_counts[tbl] = self._table_row_count(tbl)
+                else:
+                    row_counts[tbl] = 0
+
+            self.con.execute(
+                """
+                INSERT INTO ingestion_versions (version_id, created_at, reason, source_files_json, row_counts_json)
+                VALUES (?, NOW(), ?, ?, ?)
+                """,
+                [
+                    version_id,
+                    str(reason or 'manual'),
+                    json.dumps(list(source_files), ensure_ascii=False),
+                    json.dumps(row_counts, ensure_ascii=False),
+                ],
+            )
+            self._cleanup_old_versions(keep_last=max(1, int(keep_last)))
+            return version_id
+        except Exception as e:
+            print(f"Error creating data snapshot: {e}")
+            return None
+
+    def restore_data_version(self, version_id: str, create_backup: bool = True, keep_last: int = 10):
+        """
+        Restore active tables from a snapshot version.
+        Returns (ok: bool, backup_version_id: str | None).
+        """
+        target_version = str(version_id or '').strip()
+        if not target_version:
+            return False, None
+
+        self._ensure_versions_table()
+
+        backup_version_id = None
+        if create_backup and self.has_any_data():
+            backup_version_id = self.create_data_snapshot(
+                reason=f"before_restore:{target_version}",
+                source_files=[],
+                keep_last=keep_last,
+            )
+
+        restored_any = False
+        try:
+            for tbl in self._version_tables():
+                snap_table = self._snapshot_table_name(tbl, target_version)
+                if self._table_exists(snap_table):
+                    self.con.execute(
+                        f"CREATE OR REPLACE TABLE {self._quote_ident(tbl)} AS "
+                        f"SELECT * FROM {self._quote_ident(snap_table)}"
+                    )
+                    restored_any = True
+                else:
+                    self.con.execute(f"DROP TABLE IF EXISTS {self._quote_ident(tbl)}")
+
+            if restored_any:
+                self._bump_revision()
+                self._cleanup_old_versions(keep_last=max(1, int(keep_last)))
+            return restored_any, backup_version_id
+        except Exception as e:
+            print(f"Error restoring data version '{target_version}': {e}")
+            return False, backup_version_id
+
     def _align_incoming_column_names(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
         if not self._table_exists(table_name):
             return df

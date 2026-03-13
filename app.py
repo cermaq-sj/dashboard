@@ -167,19 +167,30 @@ def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
 
     if st.button(button_label, type="primary", key=button_key):
         loading = show_loading_screen("Limpiando y consolidando datos...")
+        pre_update_version = None
         try:
             kpi_files = []
             data_files = []
             med_files = []
+            file_names = []
 
             for f in uploaded_files:
                 fname = unicodedata.normalize('NFKD', f.name).encode('ascii', 'ignore').decode('ascii').lower()
+                file_names.append(f.name)
                 if 'kpi' in fname or 'proyecci' in fname:
                     kpi_files.append(f)
                 elif 'medicion' in fname:
                     med_files.append(f)
                 else:
                     data_files.append(f)
+
+            # Safety snapshot before applying updates (keep latest 10 versions).
+            if st.session_state.db_manager.has_any_data():
+                pre_update_version = st.session_state.db_manager.create_data_snapshot(
+                    reason='before_upload',
+                    source_files=file_names,
+                    keep_last=10,
+                )
 
             if data_files:
                 combined_df = load_and_clean_data(data_files)
@@ -204,17 +215,92 @@ def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
             hide_loading_screen(loading)
 
             if st.session_state.data_loaded:
-                st.success("Datos procesados correctamente.")
+                if pre_update_version:
+                    st.success(f"Datos procesados correctamente. Version previa guardada: {pre_update_version}")
+                else:
+                    st.success("Datos procesados correctamente.")
                 st.rerun()
             else:
                 st.warning("Los archivos no contenían datos válidos.")
 
         except Exception as e:
+            rollback_msg = ""
+            if pre_update_version:
+                ok_restore, _ = st.session_state.db_manager.restore_data_version(
+                    pre_update_version,
+                    create_backup=False,
+                    keep_last=10,
+                )
+                if ok_restore:
+                    rollback_msg = f"\nSe restauró automáticamente la versión previa ({pre_update_version})."
+
             if loading:
                 loading.empty()
-            st.error(f"Error crítico al procesar: {str(e)}")
+            st.error(f"Error crítico al procesar: {str(e)}{rollback_msg}")
             with st.expander("Detalles técnicos"):
                 st.text(traceback.format_exc())
+
+
+def render_versions_manager():
+    with st.sidebar.expander("🕘 Versiones de datos", expanded=False):
+        versions = st.session_state.db_manager.list_data_versions(limit=10)
+        if not versions:
+            st.caption("Aún no hay versiones guardadas.")
+            return
+
+        labels = []
+        mapping = {}
+        for v in versions:
+            ts = v.get('created_at')
+            ts_txt = str(ts)[:19] if ts is not None else 'sin-fecha'
+            reason = str(v.get('reason') or 'manual')
+            vid = str(v.get('version_id'))
+            label = f"{ts_txt} | {reason} | {vid}"
+            labels.append(label)
+            mapping[label] = vid
+
+        selected_label = st.selectbox(
+            "Selecciona versión",
+            options=labels,
+            key="version_restore_select",
+            label_visibility="collapsed",
+        )
+
+        confirm_restore = st.checkbox("Confirmo restaurar esta versión", key="confirm_restore_version")
+        if st.button("Restaurar versión", type="secondary", key="restore_version_btn", use_container_width=True):
+            if not confirm_restore:
+                st.warning("Activa la confirmación para restaurar.")
+                return
+
+            target_version = mapping.get(selected_label)
+            if not target_version:
+                st.warning("No se pudo resolver la versión seleccionada.")
+                return
+
+            loading = show_loading_screen("Restaurando versión de datos...")
+            ok, backup_version = st.session_state.db_manager.restore_data_version(
+                target_version,
+                create_backup=True,
+                keep_last=10,
+            )
+            hide_loading_screen(loading)
+
+            if ok:
+                if 'param_config' in st.session_state:
+                    del st.session_state.param_config
+                st.session_state._param_config_runtime_initialized = False
+                st.cache_data.clear()
+                st.session_state.applied_filters = None
+                st.session_state.applied_filters_key = None
+                st.session_state.data_loaded = st.session_state.db_manager.has_any_data()
+
+                if backup_version:
+                    st.success(f"Versión restaurada ({target_version}). Backup creado: {backup_version}")
+                else:
+                    st.success(f"Versión restaurada ({target_version}).")
+                st.rerun()
+            else:
+                st.error("No se pudo restaurar la versión seleccionada.")
 
 def main():
     inject_styles()
@@ -315,6 +401,8 @@ def main():
                 key="update_files_uploader"
             )
             process_uploaded_files(uploaded_files_update, "Procesar archivos", "process_update_files_btn")
+
+        render_versions_manager()
 
         # Render filters regardless; if there is no data, they appear empty without blocking access.
         med_meta = _cached_mediciones_metadata(st.session_state.db_manager, data_version)
