@@ -6,7 +6,6 @@ import copy
 from src.filters import render_filters
 from src.data_processing import load_and_clean_data
 from src.db_manager import DBManager
-from src.calculations import calculate_kpis
 from src.visualizations import create_main_chart
 from src.config_params import render_config_tab, get_range_filters, get_alias_map, get_kpi_config_thresholds
 from src.styles import inject_styles, inject_logo, show_loading_screen, hide_loading_screen, show_view_transition
@@ -328,7 +327,7 @@ def main():
 
         with st.sidebar:
             st.markdown("---")
-            apply_clicked = st.button("✅ Listo", type="primary", key="apply_filters_btn", use_container_width=True)
+            apply_clicked = st.button("✅ Listo", type="secondary", key="apply_filters_btn", use_container_width=True)
 
         if apply_clicked:
             st.session_state.applied_filters = copy.deepcopy(draft_filters)
@@ -366,17 +365,6 @@ def main():
             if not filtered_df.empty:
                 # Rename columns for display
                 display_df = filtered_df.rename(columns=alias_map)
-                
-                # 1. KPI Cards
-                kpis = calculate_kpis(filtered_df)
-                if kpis:
-                    cols = st.columns(len(kpis))
-                    for i, kpi in enumerate(kpis):
-                        cols[i].metric(kpi['label'], kpi['value'], kpi['unit'])
-                else:
-                    st.info("No hay suficientes datos para calcular KPIs.")
-    
-                st.markdown("###") # Spacer
                 
                 # 2. Controls & Main Chart
                 comparison_mode = 'Overlay'
@@ -500,9 +488,7 @@ def main():
                             x_mode = 'Days'
                             comparison_mode = 'Overlay'
                             align_first = st.checkbox("📏 Desde 1er Reg.", value=False, help="Alinear inicio de todas las curvas a 0")
-                    else:
-                        st.caption("Selecciona >1 lote para superponer")
-                
+                 
                 with ctrl_col3:
                     if multi_vars:
                         unite_vars = st.checkbox("🔗 Unir Variables", value=False, key="unite_vars_btn",
@@ -514,8 +500,6 @@ def main():
                     measure_mode = st.checkbox("📏 Medir", value=False, key="measure_btn", help="Selecciona puntos en el gráfico para ver diferencias")
                     if x_mode == 'Days' and not measure_mode:
                         st.info("Eje X: Días")
-                    elif not measure_mode:
-                        st.caption("Eje X: Fecha")
     
                 with ctrl_col5:
                     pass
@@ -874,7 +858,6 @@ def main():
                 # --- 7. Visualizations (Mediciones Chart - New) ---
                 if filters.get('mediciones_vars'):
                     st.markdown("### 🧪 Mediciones")
-                    st.caption("Gráfico independiente (Rango de fechas propio)")
                     
                     # Chart controls row
                     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 0.9, 1])

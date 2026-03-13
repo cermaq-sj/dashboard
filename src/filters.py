@@ -451,21 +451,14 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
                 else:
                     st.caption("No variables detected.")
 
-        # Add Date Picker for Mediciones (Moved to Bottom)
+        # Mediciones date range is applied automatically from DB bounds (UI hidden).
+        filters['mediciones_date_range'] = []
         if mediciones_date_bounds and mediciones_date_bounds[0]:
             min_date, max_date = mediciones_date_bounds
             if min_date and max_date:
                 start_d = pd.to_datetime(min_date).date()
                 end_d = pd.to_datetime(max_date).date()
-                
-                st.caption("Rango de fechas (Mediciones)")
-                filters['mediciones_date_range'] = st.date_input(
-                    "Seleccionar rango",
-                    value=(start_d, end_d),
-                    min_value=start_d,
-                    max_value=end_d,
-                    key="med_date_range"
-                )
+                filters['mediciones_date_range'] = (start_d, end_d)
             
     # --- 5. KPIs Section ---
     if kpi_thresholds:

@@ -73,8 +73,15 @@ def inject_styles():
             margin-top: 10px;
         }
         div[data-testid="stSidebar"] button[kind="secondary"] {
+            background-color: #2B303B !important;
+            border: 1px solid #3A4250 !important;
+            color: #E6EAF2 !important;
             width: 100% !important;
             margin-top: 10px;
+        }
+        div[data-testid="stSidebar"] button[kind="secondary"]:hover {
+            background-color: #353C49 !important;
+            border-color: #485166 !important;
         }
         
         /* Buttons */
