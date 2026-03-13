@@ -7,9 +7,28 @@ from src.calculations import calculate_kpis
 from src.visualizations import create_main_chart
 from src.config_params import render_config_tab, get_range_filters, get_alias_map, get_kpi_config_thresholds
 from src.styles import inject_styles, inject_logo, show_loading_screen, hide_loading_screen, show_view_transition
-from streamlit_plotly_events import plotly_events
 import traceback
 import unicodedata
+
+try:
+    from streamlit_plotly_events import plotly_events as _plotly_events
+    PLOTLY_EVENTS_AVAILABLE = True
+except Exception:
+    _plotly_events = None
+    PLOTLY_EVENTS_AVAILABLE = False
+
+
+def safe_plotly_events(fig, key: str):
+    if not PLOTLY_EVENTS_AVAILABLE or _plotly_events is None:
+        return []
+    return _plotly_events(
+        fig,
+        click_event=True,
+        hover_event=False,
+        select_event=False,
+        override_width="100%",
+        key=key,
+    )
 
 # --- Page Config ---
 st.set_page_config(
@@ -181,6 +200,9 @@ def main():
                 show_view_transition()
                 st.session_state.current_view = "Main"
                 st.rerun()
+
+    if not PLOTLY_EVENTS_AVAILABLE:
+        st.sidebar.warning("Modo interactivo de torta deshabilitado (falta streamlit-plotly-events).")
     
     if st.session_state.current_view == "Main":
         st.markdown("---")
@@ -498,7 +520,11 @@ def main():
                                 if is_interactive:
                                     # State transitions: parents -> children -> causes -> parents
                                     # If no hierarchy (only mort), toggle: parents -> causes -> parents
-                                    clicked = plotly_events(fig, click_event=True, hover_event=False, select_event=False, override_height=None, override_width="100%", key=f"pie_interactive_{st.session_state.pie_view_mode}")
+                                    if PLOTLY_EVENTS_AVAILABLE:
+                                        clicked = safe_plotly_events(fig, key=f"pie_interactive_{st.session_state.pie_view_mode}")
+                                    else:
+                                        st.plotly_chart(fig, use_container_width=True, key=f"pie_interactive_fallback_{st.session_state.pie_view_mode}")
+                                        clicked = []
                                     
                                     if clicked:
                                         if is_trio or has_hierarchy:
