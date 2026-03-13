@@ -49,7 +49,16 @@ def inject_styles():
         /* Sidebar selector accents (checkbox, radio, slider, select, tags) */
         [data-testid="stSidebar"] input[type="checkbox"],
         [data-testid="stSidebar"] input[type="radio"] {
-            accent-color: var(--cermaq-sidebar-accent) !important;
+            accent-color: #C9CFDA !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"],
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] {
+            border-color: #C9CFDA !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"][aria-checked="true"],
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"][aria-checked="true"] {
+            background-color: #C9CFDA !important;
+            border-color: #C9CFDA !important;
         }
         [data-testid="stSidebar"] [role="slider"] {
             background: var(--cermaq-sidebar-accent) !important;
