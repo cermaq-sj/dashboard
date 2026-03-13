@@ -97,6 +97,19 @@ def inject_styles():
             background-color: #0096C7;
             border-color: #0096C7;
         }
+
+        /* Force dark-gray buttons in sidebar (e.g., 'Listo') */
+        div[data-testid="stSidebar"] button[kind="secondary"],
+        div[data-testid="stSidebar"] button[data-testid="baseButton-secondary"] {
+            background-color: #2B303B !important;
+            border: 1px solid #3A4250 !important;
+            color: #E6EAF2 !important;
+        }
+        div[data-testid="stSidebar"] button[kind="secondary"]:hover,
+        div[data-testid="stSidebar"] button[data-testid="baseButton-secondary"]:hover {
+            background-color: #353C49 !important;
+            border-color: #485166 !important;
+        }
         
         /* Status Info Messages */
         .stAlert {
