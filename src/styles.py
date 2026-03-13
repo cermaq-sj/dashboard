@@ -58,6 +58,19 @@ def inject_styles():
         [data-testid="stSidebar"] [data-baseweb="slider"] > div > div > div {
             background-color: var(--cermaq-sidebar-accent) !important;
         }
+        [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid*="TickBar"],
+        [data-testid="stSidebar"] [data-testid="stSlider"] p,
+        [data-testid="stSidebar"] [data-testid="stSlider"] span {
+            color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] input:checked + div,
+        [data-testid="stSidebar"] [data-baseweb="radio"] input:checked + div {
+            border-color: var(--cermaq-sidebar-accent) !important;
+            background-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="radio"] input:checked + div::after {
+            background-color: var(--cermaq-sidebar-accent) !important;
+        }
         [data-testid="stSidebar"] [data-baseweb="select"] > div {
             border-color: #2E3E45 !important;
         }
