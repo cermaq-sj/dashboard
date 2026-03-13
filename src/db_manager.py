@@ -1,246 +1,597 @@
+import os
+import re
+import unicodedata
+from urllib.parse import quote_plus
+
 import duckdb
 import pandas as pd
 
+
 class DBManager:
     def __init__(self):
-        # In-memory database
-        self.con = duckdb.connect(database=':memory:')
+        self.connection_mode = 'local'
+        self.connected_db = ':memory:'
+        self.con = self._connect()
+
+    def _load_secret_value(self, key: str):
+        env_val = os.getenv(key)
+        if env_val:
+            return env_val
+
+        try:
+            import streamlit as st
+            if key in st.secrets:
+                return st.secrets[key]
+        except Exception:
+            pass
+
+        return None
+
+    def _connect(self):
+        token = self._load_secret_value('MOTHERDUCK_TOKEN')
+        database = self._load_secret_value('MOTHERDUCK_DB')
+
+        if token and database:
+            try:
+                safe_token = quote_plus(str(token))
+                con = duckdb.connect(f'md:{database}?motherduck_token={safe_token}')
+                self.connection_mode = 'motherduck'
+                self.connected_db = database
+                print(f"Connected to MotherDuck database '{database}'")
+                return con
+            except Exception as e:
+                print(f"MotherDuck connection failed, falling back to local memory DB: {e}")
+
+        self.connection_mode = 'local'
+        self.connected_db = ':memory:'
+        return duckdb.connect(database=':memory:')
+
+    def _normalize(self, value) -> str:
+        txt = unicodedata.normalize('NFKD', str(value)).encode('ascii', 'ignore').decode('ascii')
+        txt = re.sub(r'\s+', ' ', txt.strip().lower())
+        return txt
+
+    def _quote_ident(self, identifier: str) -> str:
+        return f'"{str(identifier).replace("\"", "\"\"")}"'
+
+    def _find_column(self, columns, exact_norm=None, contains_all=None, excludes_any=None):
+        exact_norm = exact_norm or []
+        contains_all = contains_all or []
+        excludes_any = excludes_any or []
+
+        norm_map = {}
+        for c in columns:
+            n = self._normalize(c)
+            if n not in norm_map:
+                norm_map[n] = c
+
+        for candidate in exact_norm:
+            found = norm_map.get(self._normalize(candidate))
+            if found:
+                return found
+
+        if contains_all:
+            includes = [self._normalize(x) for x in contains_all]
+            excludes = [self._normalize(x) for x in excludes_any]
+            for c in columns:
+                n = self._normalize(c)
+                if all(i in n for i in includes) and not any(e in n for e in excludes):
+                    return c
+
+        return None
+
+    def _resolve_columns_by_norm(self, requested_cols, available_cols):
+        by_norm = {self._normalize(c): c for c in available_cols}
+        resolved = []
+        for c in requested_cols:
+            if c in available_cols:
+                resolved.append(c)
+                continue
+            n = self._normalize(c)
+            if n in by_norm:
+                resolved.append(by_norm[n])
+                continue
+            return None
+        return resolved
+
+    def _table_exists(self, table_name: str) -> bool:
+        try:
+            self.con.execute(f"DESCRIBE {self._quote_ident(table_name)}")
+            return True
+        except Exception:
+            return False
+
+    def _table_row_count(self, table_name: str) -> int:
+        if not self._table_exists(table_name):
+            return 0
+        try:
+            return int(self.con.execute(f"SELECT COUNT(*) FROM {self._quote_ident(table_name)}").fetchone()[0])
+        except Exception:
+            return 0
+
+    def has_any_data(self) -> bool:
+        return any(
+            self._table_row_count(tbl) > 0
+            for tbl in ['fishtalk_data', 'mediciones_data', 'kpi_thresholds', 'proyecciones_data']
+        )
+
+    def get_connection_status(self) -> dict:
+        return {
+            'mode': self.connection_mode,
+            'database': self.connected_db,
+            'has_data': self.has_any_data(),
+            'rows': {
+                'fishtalk_data': self._table_row_count('fishtalk_data'),
+                'mediciones_data': self._table_row_count('mediciones_data'),
+                'kpi_thresholds': self._table_row_count('kpi_thresholds'),
+                'proyecciones_data': self._table_row_count('proyecciones_data'),
+            },
+        }
+
+    def _align_incoming_column_names(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+        if not self._table_exists(table_name):
+            return df
+
+        target_cols = [r[0] for r in self.con.execute(f"DESCRIBE {self._quote_ident(table_name)}").fetchall()]
+        target_norm_map = {self._normalize(c): c for c in target_cols}
+
+        rename_map = {}
+        current_cols = set(df.columns)
+        for col in df.columns:
+            if col in target_cols:
+                continue
+            mapped = target_norm_map.get(self._normalize(col))
+            if mapped and mapped not in current_cols:
+                rename_map[col] = mapped
+                current_cols.add(mapped)
+
+        if rename_map:
+            return df.rename(columns=rename_map)
+        return df
+
+    def _ensure_table_has_incoming_columns(self, table_name: str, incoming_df: pd.DataFrame):
+        desc_target = self.con.execute(f"DESCRIBE {self._quote_ident(table_name)}").fetchall()
+        target_cols = {r[0] for r in desc_target}
+
+        self.con.register('__incoming_schema_view', incoming_df)
+        try:
+            desc_in = self.con.execute("DESCRIBE __incoming_schema_view").fetchall()
+            incoming_types = {r[0]: r[1] for r in desc_in}
+        finally:
+            self.con.unregister('__incoming_schema_view')
+
+        for col, col_type in incoming_types.items():
+            if col not in target_cols:
+                self.con.execute(
+                    f"ALTER TABLE {self._quote_ident(table_name)} ADD COLUMN {self._quote_ident(col)} {col_type}"
+                )
+
+    def _convert_numeric_columns(self, df: pd.DataFrame, protected_columns=None):
+        protected_columns = protected_columns or []
+        protected_norm = {self._normalize(c) for c in protected_columns}
+
+        text_markers = [
+            'sheet', 'source', 'lugar', 'horario', 'muestreo', 'departamento',
+            'depto', 'unidad', 'batch', 'lote', 'parametro', 'estado',
+            'riesgo', 'explicacion', 'medidor', 'vacuna', 'comportamiento',
+            'ayuno', 'biofiltros', 'hora', 'cliente'
+        ]
+
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                continue
+
+            col_norm = self._normalize(col)
+            if col_norm in protected_norm:
+                continue
+            if any(marker in col_norm for marker in text_markers):
+                continue
+
+            if df[col].dtype == 'object':
+                converted = pd.to_numeric(df[col], errors='coerce')
+                if converted.notna().sum() > 0:
+                    df[col] = converted.astype(float)
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                df[col] = df[col].astype(float)
+
+        return df
+
+    def _build_stage_from_incoming(self, incoming_df: pd.DataFrame, key_columns, stage_name: str, target_schema=None):
+        self.con.register('__incoming_upsert_view', incoming_df)
+        try:
+            if target_schema is None:
+                select_expr = ', '.join(self._quote_ident(c) for c in incoming_df.columns)
+            else:
+                target_cols = [c for c, _ in target_schema]
+                target_types = {c: t for c, t in target_schema}
+                incoming_cols = set(incoming_df.columns)
+
+                exprs = []
+                for col in target_cols:
+                    qcol = self._quote_ident(col)
+                    if col in incoming_cols:
+                        exprs.append(f"TRY_CAST({qcol} AS {target_types[col]}) AS {qcol}")
+                    else:
+                        exprs.append(f"CAST(NULL AS {target_types[col]}) AS {qcol}")
+                select_expr = ', '.join(exprs)
+
+            self.con.execute(
+                f"CREATE OR REPLACE TEMP TABLE {stage_name}_raw AS "
+                f"SELECT {select_expr}, ROW_NUMBER() OVER () AS \"__ord\" FROM __incoming_upsert_view"
+            )
+
+            key_sql = ', '.join(self._quote_ident(c) for c in key_columns)
+            self.con.execute(
+                f"CREATE OR REPLACE TEMP TABLE {stage_name} AS "
+                f"SELECT * EXCLUDE (\"__ord\", \"__rn\") "
+                f"FROM ("
+                f"  SELECT *, ROW_NUMBER() OVER (PARTITION BY {key_sql} ORDER BY \"__ord\" DESC) AS \"__rn\" "
+                f"  FROM {stage_name}_raw"
+                f") t "
+                f"WHERE \"__rn\" = 1"
+            )
+        finally:
+            self.con.unregister('__incoming_upsert_view')
+
+    def _upsert_dataframe(self, df: pd.DataFrame, table_name: str, key_columns, replace_on_keys=None):
+        summary = {
+            'received': 0,
+            'dropped_null_keys': 0,
+            'table': table_name,
+        }
+
+        if df is None or df.empty:
+            return summary
+
+        work_df = df.copy()
+        work_df.columns = [str(c).strip() for c in work_df.columns]
+        summary['received'] = len(work_df)
+
+        key_columns = self._resolve_columns_by_norm(key_columns, list(work_df.columns))
+        if not key_columns:
+            raise ValueError(f"No se pudieron resolver columnas clave para {table_name}: {key_columns}")
+
+        for key_col in key_columns:
+            if work_df[key_col].dtype == 'object':
+                work_df[key_col] = work_df[key_col].astype(str).str.strip().replace('', pd.NA)
+
+        valid_mask = work_df[key_columns].notna().all(axis=1)
+        dropped = int((~valid_mask).sum())
+        if dropped > 0:
+            summary['dropped_null_keys'] = dropped
+            work_df = work_df[valid_mask].copy()
+
+        if work_df.empty:
+            return summary
+
+        stage_name = '__stage_upsert'
+        table_exists = self._table_exists(table_name)
+
+        if table_exists:
+            work_df = self._align_incoming_column_names(work_df, table_name)
+            self._ensure_table_has_incoming_columns(table_name, work_df)
+
+            target_schema = [(r[0], r[1]) for r in self.con.execute(f"DESCRIBE {self._quote_ident(table_name)}").fetchall()]
+            target_cols = [c for c, _ in target_schema]
+
+            resolved_keys = self._resolve_columns_by_norm(key_columns, target_cols)
+            if not resolved_keys:
+                raise ValueError(f"No se pudieron mapear llaves contra tabla destino {table_name}")
+
+            self._build_stage_from_incoming(work_df, resolved_keys, stage_name, target_schema=target_schema)
+
+            if replace_on_keys:
+                replace_keys = self._resolve_columns_by_norm(replace_on_keys, target_cols)
+                if replace_keys:
+                    rk_sql = ', '.join(self._quote_ident(c) for c in replace_keys)
+                    delete_on = ' AND '.join(
+                        f"tgt.{self._quote_ident(k)} IS NOT DISTINCT FROM ev.{self._quote_ident(k)}"
+                        for k in replace_keys
+                    )
+                    self.con.execute(
+                        f"DELETE FROM {self._quote_ident(table_name)} AS tgt "
+                        f"USING (SELECT DISTINCT {rk_sql} FROM {stage_name}) AS ev "
+                        f"WHERE {delete_on}"
+                    )
+
+            incoming_norms = {self._normalize(c) for c in work_df.columns}
+            mutable_cols = [
+                c for c in target_cols
+                if c not in resolved_keys and self._normalize(c) in incoming_norms
+            ]
+
+            on_clause = ' AND '.join(
+                f"tgt.{self._quote_ident(k)} IS NOT DISTINCT FROM src.{self._quote_ident(k)}"
+                for k in resolved_keys
+            )
+
+            merge_parts = [
+                f"MERGE INTO {self._quote_ident(table_name)} AS tgt",
+                f"USING {stage_name} AS src",
+                f"ON {on_clause}",
+            ]
+
+            if mutable_cols:
+                change_cond = ' OR '.join(
+                    f"tgt.{self._quote_ident(c)} IS DISTINCT FROM src.{self._quote_ident(c)}"
+                    for c in mutable_cols
+                )
+                set_clause = ', '.join(
+                    f"{self._quote_ident(c)} = src.{self._quote_ident(c)}"
+                    for c in mutable_cols
+                )
+                merge_parts.append(f"WHEN MATCHED AND ({change_cond}) THEN UPDATE SET {set_clause}")
+
+            insert_cols = ', '.join(self._quote_ident(c) for c in target_cols)
+            insert_vals = ', '.join(f"src.{self._quote_ident(c)}" for c in target_cols)
+            merge_parts.append(f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})")
+
+            self.con.execute('\n'.join(merge_parts))
+
+        else:
+            self._build_stage_from_incoming(work_df, key_columns, stage_name, target_schema=None)
+            self.con.execute(
+                f"CREATE TABLE {self._quote_ident(table_name)} AS SELECT * FROM {stage_name}"
+            )
+
+        self.con.execute(f"DROP TABLE IF EXISTS {stage_name}_raw")
+        self.con.execute(f"DROP TABLE IF EXISTS {stage_name}")
+
+        return summary
+
+    def _resolve_production_key_columns(self, columns):
+        col_fecha = self._find_column(columns, exact_norm=['final fecha'], contains_all=['final', 'fecha'])
+        col_batch = self._resolve_col('Lote', columns)
+        col_dept = self._resolve_col('Departamento', columns)
+        col_unit = self._resolve_col('Unidad', columns)
+        col_days = self._find_column(
+            columns,
+            exact_norm=['final days since first input'],
+            contains_all=['final', 'days since first input'],
+        )
+        col_final_num = self._find_column(
+            columns,
+            exact_norm=['final numero'],
+            contains_all=['final', 'numero'],
+            excludes_any=['mortalidad', 'ventas', 'eliminados', 'perdida'],
+        )
+
+        key_cols = [col_fecha, col_batch, col_dept, col_unit, col_days, col_final_num]
+        if all(key_cols):
+            return key_cols
+        return None
 
     def ingest_data(self, df: pd.DataFrame, table_name: str = 'fishtalk_data'):
         """
-        Registers a pandas DataFrame as a DuckDB table with robust type handling.
+        Ingesta del Excel maestro (pesado) con upsert por clave de negocio:
+        Final Fecha + Batch/Lote + Departamento + Unidad +
+        Final Days since first input + Final Número.
         """
-        if df is not None and not df.empty:
-            # Clean up column names
-            df.columns = [str(c).strip() for c in df.columns]
+        if df is None or df.empty:
+            return {'received': 0, 'dropped_null_keys': 0, 'table': table_name}
 
-            # >>> ONLY APPLY FILTERS TO PRODUCTION DATA <<<
-            if table_name == 'fishtalk_data':
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]
 
-                # GLOBAL EXCLUSION 2: Remove rows where "Final Número" is 0 or Null
-                # Robust match: Starts with "final n" AND contains "mero" (handles encoding/accents)
-                final_num_col = next((c for c in df.columns if c.lower().strip().startswith('final n') and 'mero' in c.lower()), None)
-                
-                if final_num_col:
-                    initial_len = len(df)
-                    vals = pd.to_numeric(df[final_num_col], errors='coerce')
-                    
-                    # Strict Filter: Keep only valid non-zero
-                    # Since Mediciones are now separate, we don't need complex exemptions!
-                    df = df[(vals != 0) & (vals.notna())].copy()
-                    
-                    if len(df) < initial_len:
-                        print(f"Excluded {initial_len - len(df)} rows with invalid Final Número (Production only)")
+        if table_name == 'fishtalk_data':
+            final_num_col = self._find_column(
+                df.columns,
+                exact_norm=['final numero'],
+                contains_all=['final', 'numero'],
+                excludes_any=['mortalidad', 'ventas', 'eliminados', 'perdida'],
+            )
 
-                # GLOBAL ADDITION: Calculate "Dif biomasa"
-                # Find the 'Batch', 'Final Fecha' and 'Final Biomasa' columns robustly
-                batch_col = next((c for c in df.columns if c.lower() == 'batch'), next((c for c in df.columns if 'batch' in c.lower() or 'lote' in c.lower()), None))
-                fecha_col = next((c for c in df.columns if c.lower() == 'final fecha'), next((c for c in df.columns if 'fecha' in c.lower() or 'date' in c.lower()), None))
-                biomasa_col = next((c for c in df.columns if c.lower() == 'final biomasa'), next((c for c in df.columns if 'biomasa' in c.lower() and ('final' in c.lower() or 'total' in c.lower())), next((c for c in df.columns if 'biomas' in c.lower()), None)))
-                dept_col = next((c for c in df.columns if c.lower() == 'departamento'), next((c for c in df.columns if 'departamento' in c.lower() or 'dept' in c.lower()), None))
-                unit_col = next((c for c in df.columns if c.lower() == 'unidad'), next((c for c in df.columns if 'unidad' in c.lower() or 'unit' in c.lower() or 'jaula' in c.lower()), None))
+            if final_num_col:
+                initial_len = len(df)
+                vals = pd.to_numeric(df[final_num_col], errors='coerce')
+                df = df[(vals != 0) & (vals.notna())].copy()
+                if len(df) < initial_len:
+                    print(f"Excluded {initial_len - len(df)} rows with invalid Final Número (Production only)")
 
-                if batch_col and fecha_col and biomasa_col:
-                    try:
-                        import numpy as np
-                        # 1. Ensure Fecha is datetime for correct min finding
-                        temp_fecha = pd.to_datetime(df[fecha_col], errors='coerce')
-                        
-                        # We need numeric biomass for calculations
-                        temp_biomasa = pd.to_numeric(df[biomasa_col], errors='coerce')
-                        
-                        # 2. Sophisticated baseline calculation:
-                        # Find earliest > 0 biomass in 'FRY' department for each unit in each batch
-                        
-                        valid_df = pd.DataFrame({
-                            'batch': df[batch_col],
-                            'unit': df[unit_col] if unit_col else 'UNKNOWN_UNIT',
-                            'fecha': temp_fecha,
-                            'biomasa': temp_biomasa,
-                        })
-                        
-                        if dept_col:
-                            valid_df['dept'] = df[dept_col].astype(str).str.strip().str.upper()
-                        else:
-                            valid_df['dept'] = 'UNKNOWN'
-                        
-                        # Filter for FRY department AND Biomasa > 0
-                        fry_df = valid_df[(valid_df['dept'] == 'FRY') & (valid_df['biomasa'] > 0)].dropna(subset=['fecha', 'biomasa'])
-                        
-                        initial_biomasa_map = {}
-                        if not fry_df.empty:
-                            # Sort by date to ensure we get the chronological first
-                            fry_df = fry_df.sort_values('fecha')
-                            
-                            # Get the first record per batch and unit
-                            first_per_unit = fry_df.groupby(['batch', 'unit']).first().reset_index()
-                            
-                            # Function to calculate average excluding exaggerated outliers (using IQR)
-                            def avg_without_outliers(series):
-                                vals = series.values
-                                if len(vals) == 0: return np.nan
-                                if len(vals) < 3: return np.mean(vals) # Too few to filter reliably
-                                
-                                q1 = np.percentile(vals, 25)
-                                q3 = np.percentile(vals, 75)
-                                iqr = q3 - q1
-                                lower = q1 - 1.5 * iqr
-                                upper = q3 + 1.5 * iqr
-                                
-                                normals = vals[(vals >= lower) & (vals <= upper)]
-                                if len(normals) == 0: return np.mean(vals) # Fallback if all filtered
-                                return np.mean(normals)
-                            
-                            # Apply the function to each batch to get the single baseline per batch
-                            initial_biomasa_map = first_per_unit.groupby('batch')['biomasa'].apply(avg_without_outliers).to_dict()
-                        
-                        # 3. Create the new column "Dif biomasa" and "Dif biomasa + bio mort"
-                        # For each row, subtract mapped initial biomass from row's biomass ABSOLUTE
-                        baseline = df[batch_col].map(initial_biomasa_map)
-                        df['Dif biomasa'] = (temp_biomasa - baseline).abs()
-                        
-                        mort_col = "Final Mortalidad, Biomasa" if "Final Mortalidad, Biomasa" in df.columns else None
-                        if mort_col:
-                            temp_mort = pd.to_numeric(df[mort_col], errors='coerce').fillna(0)
-                        else:
-                            temp_mort = 0
-                            
-                        # "valor de 'Final Biomasa' según la fila menos el valor... + biomasa muerta"
-                        # Make this absolute as well.
-                        df['Dif biomasa + bio mort'] = ((temp_biomasa - baseline) + temp_mort).abs()
-                        
-                        print("Successfully calculated sophisticated 'Dif biomasa' and 'Dif biomasa + bio mort'")
+            batch_col = self._resolve_col('Lote', list(df.columns))
+            fecha_col = self._find_column(df.columns, exact_norm=['final fecha'], contains_all=['final', 'fecha'])
+            biomasa_col = self._find_column(
+                df.columns,
+                exact_norm=['final biomasa'],
+                contains_all=['biomasa'],
+            )
+            dept_col = self._resolve_col('Departamento', list(df.columns))
+            unit_col = self._resolve_col('Unidad', list(df.columns))
 
-                    except Exception as e:
-                        print(f"Error calculating 'Dif biomasa': {e}")
-                        df['Dif biomasa'] = pd.NA
-                        df['Dif biomasa + bio mort'] = pd.NA
+            if batch_col and fecha_col and biomasa_col:
+                try:
+                    import numpy as np
 
-            # AGGRESSIVE TYPE CLEANING
-            # To avoid "Type DOUBLE does not match with INTEGER" errors.
-            
-            for col in df.columns:
-                # 1. Skip if already datetime
-                if pd.api.types.is_datetime64_any_dtype(df[col]):
-                    continue
-                
-                # 2. Try to convert object/string columns to numeric
-                if df[col].dtype == 'object':
-                    try:
-                        # Heuristic: Check if column behaves like a number
-                        # We use to_numeric with coerce. 
-                        # If the column is mostly text, it will become all NaNs. 
-                        # We should check if we are destroying data.
-                        
-                        # Check: If specific column names (like Batch/Unit/Dept) -> KEEP AS OBJECT (VARCHAR)
-                        # We don't want "Batch 1" to become "NaN".
-                        # But "Batch" usually has "Lote A", "Lote B". These are strings.
-                        
-                        col_lower = col.lower()
-                        text_cols = ['lote', 'batch', 'unidad', 'unit', 'jaula', 'cage', 'depto', 'dep', 'area', 'sect', 'source']
-                        if any(tc in col_lower for tc in text_cols):
-                            continue
+                    temp_fecha = pd.to_datetime(df[fecha_col], errors='coerce')
+                    temp_biomasa = pd.to_numeric(df[biomasa_col], errors='coerce')
 
-                        # Convert to numeric, coercing errors to NaN
-                        converted = pd.to_numeric(df[col], errors='coerce')
-                        
-                        # Check emptiness: If we had values before, and now we have all NaNs, 
-                        # it means it was text (that wasn't in our exclude list).
-                        # If we have at least one valid number, it might be a mixed column 
-                        # (e.g. "100", "N/A", "200.5"). In this case, we prefer float.
-                        
-                        # Count non-nulls before and after
-                        non_null_before = df[col].notna().sum()
-                        non_null_after = converted.notna().sum()
-                        
-                        # If we retained at least some data (e.g. > 0 and ratio is reasonable?), keep it.
-                        # Actually, if we lose ANY data (count decreases), we might be converting "100kg" to NaN.
-                        # But for plotting, we usually want numbers.
-                        
-                        # Let's rely on the fact that metric columns we care about are numeric.
-                        # If a column is "Weight" and has "100kg", we might want to clean it?
-                        # For now simplicity: If > 50% valid numbers, convert.
-                        
-                        if non_null_after > 0:
-                             df[col] = converted.astype(float)
-                             
-                    except Exception:
-                        pass
-                
-                # 3. If it is numeric (int or float), force FLOAT.
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    df[col] = df[col].astype(float)
-            
-        try:
-            self.con.register('temp_view', df)
-            self.con.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM temp_view")
-            self.con.unregister('temp_view')
-        except Exception as e:
-            print(f"Ingestion error: {e}")
-            pass
+                    valid_df = pd.DataFrame({
+                        'batch': df[batch_col],
+                        'unit': df[unit_col] if unit_col else 'UNKNOWN_UNIT',
+                        'fecha': temp_fecha,
+                        'biomasa': temp_biomasa,
+                    })
+
+                    if dept_col:
+                        valid_df['dept'] = df[dept_col].astype(str).str.strip().str.upper()
+                    else:
+                        valid_df['dept'] = 'UNKNOWN'
+
+                    fry_df = valid_df[(valid_df['dept'] == 'FRY') & (valid_df['biomasa'] > 0)].dropna(subset=['fecha', 'biomasa'])
+
+                    initial_biomasa_map = {}
+                    if not fry_df.empty:
+                        fry_df = fry_df.sort_values('fecha')
+                        first_per_unit = fry_df.groupby(['batch', 'unit']).first().reset_index()
+
+                        def avg_without_outliers(series):
+                            vals = series.values
+                            if len(vals) == 0:
+                                return np.nan
+                            if len(vals) < 3:
+                                return np.mean(vals)
+
+                            q1 = np.percentile(vals, 25)
+                            q3 = np.percentile(vals, 75)
+                            iqr = q3 - q1
+                            lower = q1 - 1.5 * iqr
+                            upper = q3 + 1.5 * iqr
+
+                            normals = vals[(vals >= lower) & (vals <= upper)]
+                            if len(normals) == 0:
+                                return np.mean(vals)
+                            return np.mean(normals)
+
+                        initial_biomasa_map = first_per_unit.groupby('batch')['biomasa'].apply(avg_without_outliers).to_dict()
+
+                    baseline = df[batch_col].map(initial_biomasa_map)
+                    df['Dif biomasa'] = (temp_biomasa - baseline).abs()
+
+                    mort_col = 'Final Mortalidad, Biomasa' if 'Final Mortalidad, Biomasa' in df.columns else None
+                    temp_mort = pd.to_numeric(df[mort_col], errors='coerce').fillna(0) if mort_col else 0
+                    df['Dif biomasa + bio mort'] = ((temp_biomasa - baseline) + temp_mort).abs()
+
+                except Exception as e:
+                    print(f"Error calculating 'Dif biomasa': {e}")
+                    df['Dif biomasa'] = pd.NA
+                    df['Dif biomasa + bio mort'] = pd.NA
+
+        self._convert_numeric_columns(df)
+
+        key_cols = self._resolve_production_key_columns(list(df.columns))
+        if not key_cols:
+            raise ValueError(
+                "No se pudieron resolver todas las columnas clave del Excel maestro "
+                "(Final Fecha, Batch/Lote, Departamento, Unidad, Final Days since first input, Final Número)."
+            )
+
+        return self._upsert_dataframe(df, table_name=table_name, key_columns=key_cols)
 
     def ingest_mediciones_data(self, file, table_name: str = 'mediciones_data'):
         """
-        Reads all sheets from a Mediciones Excel file and unifies them into a single table.
+        Ingesta de Mediciones con claves por hoja:
+        - Hatchery: sheet_name + Fecha
+        - Alevinaje: sheet_name + Day (normalizado a Fecha)
+        - Smolt: sheet_name + Day (normalizado a Fecha)
+        - Metales: sheet_name + Fecha + Horario + Lugar de muestreo
+        - i-STAT: Muestreo + Departamento + Fecha Muestreo + Unidad + Batch + _istat_row_idx
+        - Alertas por Estado: Muestreo + Parámetro + Estado
         """
         try:
             sheets_dict = pd.read_excel(file, sheet_name=None)
         except Exception:
             file.seek(0)
             sheets_dict = pd.read_excel(file, sheet_name=None)
-            
-        all_dfs = []
-        for sheet_name, df in sheets_dict.items():
-            if df.empty:
+
+        total_rows = 0
+        sheet_summaries = {}
+
+        for sheet_name, raw_df in sheets_dict.items():
+            if raw_df is None or raw_df.empty:
                 continue
-                
-            df = df.copy()
+
+            df = raw_df.copy()
             df.columns = [str(c).strip() for c in df.columns]
-            
-            # Resolve Fecha
-            col_fecha = next((c for c in df.columns if 'fecha' in c.lower() or 'day' == c.lower() or 'date' in c.lower()), None)
-            if col_fecha:
-                # Rename the actual date column to "Fecha" for consistency across sheets
-                if col_fecha != 'Fecha':
-                    df = df.rename(columns={col_fecha: 'Fecha'})
-                df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
-                
-            # Add sheet info
+            sheet_norm = self._normalize(sheet_name)
+
             df['sheet_name'] = sheet_name
             df['source_file'] = 'Mediciones'
-            
-            # Ensure "Lugar de muestreo" exists for all (defaulting to sheet name or 'General' if missing)
-            col_lugar = next((c for c in df.columns if 'lugar' in c.lower() and 'muestreo' in c.lower()), None)
-            if col_lugar and col_lugar != 'Lugar de muestreo':
-                df = df.rename(columns={col_lugar: 'Lugar de muestreo'})
-            elif 'Lugar de muestreo' not in df.columns:
-                df['Lugar de muestreo'] = 'General'
-                
-            # Convert numeric columns
-            for col in df.columns:
-                if col in ['Fecha', 'sheet_name', 'source_file', 'Lugar de muestreo', 'Horario']:
-                    continue
-                # If object, try numeric
-                if df[col].dtype == 'object':
-                    converted = pd.to_numeric(df[col], errors='coerce')
-                    if converted.notna().sum() > 0:
-                        df[col] = converted.astype(float)
-                elif pd.api.types.is_numeric_dtype(df[col]):
-                    df[col] = df[col].astype(float)
-                    
-            all_dfs.append(df)
-            
-        if all_dfs:
-            # Concat all sheets (missing columns in some sheets will be NaN)
-            final_df = pd.concat(all_dfs, ignore_index=True)
-            try:
-                self.con.register('temp_med', final_df)
-                self.con.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM temp_med")
-                self.con.unregister('temp_med')
-                print(f"Successfully ingested {len(final_df)} rows from Mediciones across {len(all_dfs)} sheets")
-            except Exception as e:
-                print(f"Mediciones Ingestion error: {e}")
-                pass
+
+            replace_on_keys = None
+
+            if sheet_norm in ('hatchery', 'alevinaje', 'smolt', 'metales'):
+                if sheet_norm in ('alevinaje', 'smolt'):
+                    date_col = self._find_column(df.columns, exact_norm=['day'], contains_all=['day'])
+                else:
+                    date_col = self._find_column(df.columns, exact_norm=['fecha'], contains_all=['fecha'])
+
+                if not date_col:
+                    date_col = self._find_column(df.columns, contains_all=['date'])
+
+                if date_col and date_col != 'Fecha':
+                    df = df.rename(columns={date_col: 'Fecha'})
+                if 'Fecha' in df.columns:
+                    df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
+
+                lugar_col = self._find_column(
+                    df.columns,
+                    exact_norm=['lugar de muestreo'],
+                    contains_all=['lugar', 'muestreo'],
+                )
+                if lugar_col and lugar_col != 'Lugar de muestreo':
+                    df = df.rename(columns={lugar_col: 'Lugar de muestreo'})
+                if 'Lugar de muestreo' not in df.columns:
+                    df['Lugar de muestreo'] = 'General'
+
+                if sheet_norm == 'metales':
+                    horario_col = self._find_column(df.columns, exact_norm=['horario'], contains_all=['horario'])
+                    if horario_col and horario_col != 'Horario':
+                        df = df.rename(columns={horario_col: 'Horario'})
+                    key_cols = ['sheet_name', 'Fecha', 'Horario', 'Lugar de muestreo']
+                else:
+                    key_cols = ['sheet_name', 'Fecha']
+
+            elif sheet_norm in ('i-stat', 'i stat'):
+                rename_candidates = {
+                    'Muestreo': ['muestreo'],
+                    'Departamento': ['departamento'],
+                    'Fecha Muestreo': ['fecha muestreo', 'fecha'],
+                    'Unidad': ['unidad'],
+                    'Batch': ['batch'],
+                }
+                for canonical, candidates in rename_candidates.items():
+                    found = self._find_column(df.columns, exact_norm=candidates, contains_all=[candidates[0]])
+                    if found and found != canonical:
+                        df = df.rename(columns={found: canonical})
+
+                if 'Fecha Muestreo' in df.columns:
+                    df['Fecha Muestreo'] = pd.to_datetime(df['Fecha Muestreo'], errors='coerce')
+
+                base_keys = ['Muestreo', 'Departamento', 'Fecha Muestreo', 'Unidad', 'Batch']
+                missing = [k for k in base_keys if k not in df.columns]
+                if missing:
+                    raise ValueError(f"i-STAT: faltan columnas clave: {missing}")
+
+                df['_istat_row_idx'] = df.groupby(base_keys, dropna=False).cumcount() + 1
+                key_cols = base_keys + ['_istat_row_idx']
+                replace_on_keys = base_keys
+
+            elif sheet_norm == 'alertas por estado':
+                rename_candidates = {
+                    'Muestreo': ['muestreo'],
+                    'Parámetro': ['parametro', 'parámetro'],
+                    'Estado': ['estado'],
+                    'Nivel de Riesgo': ['nivel de riesgo'],
+                    'Explicación': ['explicacion', 'explicación'],
+                }
+                for canonical, candidates in rename_candidates.items():
+                    found = self._find_column(df.columns, exact_norm=candidates, contains_all=[candidates[0]])
+                    if found and found != canonical:
+                        df = df.rename(columns={found: canonical})
+
+                key_cols = ['Muestreo', 'Parámetro', 'Estado']
+
+            else:
+                generic_date = self._find_column(df.columns, exact_norm=['fecha'], contains_all=['fecha'])
+                if generic_date and generic_date != 'Fecha':
+                    df = df.rename(columns={generic_date: 'Fecha'})
+                if 'Fecha' in df.columns:
+                    df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
+                key_cols = ['sheet_name', 'Fecha'] if 'Fecha' in df.columns else ['sheet_name']
+
+            self._convert_numeric_columns(df, protected_columns=key_cols)
+
+            summary = self._upsert_dataframe(
+                df,
+                table_name=table_name,
+                key_columns=key_cols,
+                replace_on_keys=replace_on_keys,
+            )
+            sheet_summaries[sheet_name] = summary
+            total_rows += summary.get('received', 0)
+
+        print(f"Successfully ingested/updated {total_rows} rows from Mediciones across {len(sheet_summaries)} sheets")
+        return {'total_received': total_rows, 'sheets': sheet_summaries}
 
     def query(self, sql: str) -> pd.DataFrame:
         """
@@ -836,7 +1187,7 @@ class DBManager:
                     WHERE {where_sql}
                     GROUP BY {group_sql}
                 """
-                query = wrap_query_with_fcr(base_query, order_col)
+                query = wrap_query_with_metrics(base_query, order_col)
 
             # Priority 2: Sum Units (Existing) - Groups by Dept, Sums Counts, Avgs Rates
             elif filters.get('sum_units'):

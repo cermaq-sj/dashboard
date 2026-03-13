@@ -9,6 +9,7 @@ from src.config_params import render_config_tab, get_range_filters, get_alias_ma
 from src.styles import inject_styles, inject_logo, show_loading_screen, hide_loading_screen, show_view_transition
 from streamlit_plotly_events import plotly_events
 import traceback
+import unicodedata
 
 # --- Page Config ---
 st.set_page_config(
@@ -20,6 +21,9 @@ st.set_page_config(
 # Initialize DB Manager
 if 'db_manager' not in st.session_state:
     st.session_state.db_manager = DBManager()
+
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = st.session_state.db_manager.has_any_data()
 
 
 
@@ -72,14 +76,69 @@ def show_profile_dialog():
             st.session_state.current_profile = key
             st.rerun()
 
+
+def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
+    if not uploaded_files:
+        return
+
+    if st.button(button_label, type="primary", key=button_key):
+        loading = show_loading_screen("Limpiando y consolidando datos...")
+        try:
+            kpi_files = []
+            data_files = []
+            med_files = []
+
+            for f in uploaded_files:
+                fname = unicodedata.normalize('NFKD', f.name).encode('ascii', 'ignore').decode('ascii').lower()
+                if 'kpi' in fname or 'proyecci' in fname:
+                    kpi_files.append(f)
+                elif 'medicion' in fname:
+                    med_files.append(f)
+                else:
+                    data_files.append(f)
+
+            if data_files:
+                combined_df = load_and_clean_data(data_files)
+                if not combined_df.empty:
+                    st.session_state.db_manager.ingest_data(combined_df, table_name='fishtalk_data')
+
+            for mf in med_files:
+                st.session_state.db_manager.ingest_mediciones_data(mf)
+
+            for kf in kpi_files:
+                st.session_state.db_manager.ingest_kpis_proyecciones(kf)
+
+            if 'param_config' in st.session_state:
+                del st.session_state.param_config
+
+            st.session_state.data_loaded = st.session_state.db_manager.has_any_data()
+            hide_loading_screen(loading)
+
+            if st.session_state.data_loaded:
+                st.success("Datos procesados correctamente.")
+                st.rerun()
+            else:
+                st.warning("Los archivos no contenían datos válidos.")
+
+        except Exception as e:
+            if loading:
+                loading.empty()
+            st.error(f"Error crítico al procesar: {str(e)}")
+            with st.expander("Detalles técnicos"):
+                st.text(traceback.format_exc())
+
 def main():
     inject_styles()
+    db_status = st.session_state.db_manager.get_connection_status()
+    st.session_state.data_loaded = db_status.get('has_data', False)
     
     # Initialize View State
     if 'current_view' not in st.session_state:
         st.session_state.current_view = "Main"
     if 'current_profile' not in st.session_state:
         st.session_state.current_profile = "maestro"
+    if not st.session_state.get('data_loaded') and st.session_state.db_manager.has_any_data():
+        st.session_state.data_loaded = True
 
     # --- Header ---
     if st.session_state.current_view == "Main":
@@ -90,6 +149,10 @@ def main():
         with col_status:
             if 'data_loaded' in st.session_state and st.session_state.data_loaded:
                  st.markdown("🟢 <span style='color:#4ADE80; font-weight:600'>Datos Cargados</span>", unsafe_allow_html=True)
+                 if db_status.get('mode') == 'motherduck':
+                     st.caption("☁️ MotherDuck")
+                 else:
+                     st.caption("💻 Local")
             else:
                  st.markdown("⚪ <span style='color:#A0AEC0'>Esperando datos</span>", unsafe_allow_html=True)
                  
@@ -121,84 +184,35 @@ def main():
     
     if st.session_state.current_view == "Main":
         st.markdown("---")
-        # --- Sidebar & Data Loading ---
-            # --- Sidebar & Data Loading ---
-        
+
         # State for filters
         filters = {}
-        
-        if 'data_loaded' in st.session_state and st.session_state.data_loaded:
-            # Render Filters if data is loaded
-            # Fetch Mediciones Metadata & Bounds
-            med_meta = st.session_state.db_manager.get_mediciones_metadata()
-            med_bounds = st.session_state.db_manager.get_mediciones_date_range()
-            
-            # Fetch KPI Thresholds & Projections Metadata
-            kpi_thresholds = get_kpi_config_thresholds() or st.session_state.db_manager.get_kpi_thresholds()
-            proj_meta = st.session_state.db_manager.get_proyecciones_metadata()
-            
-            filters = render_filters(st.session_state.db_manager, mediciones_meta=med_meta, mediciones_date_bounds=med_bounds, kpi_thresholds=kpi_thresholds, proyecciones_meta=proj_meta)
-        else:
-            # Show File Uploader if no data
-            st.sidebar.markdown("### 📥 Carga de Datos")
-            st.sidebar.info("Carga 1-3 archivos Excel exportados de Fishtalk (.xlsx, .xls)")
-            
-            uploaded_files = st.sidebar.file_uploader(
-                "Seleccionar Archivos", 
-                type=['xlsx', 'xls', 'xml', 'html'], # Expanded extensions
+        med_bounds = (None, None)
+        kpi_thresholds = {}
+
+        with st.sidebar.expander("🔄 Cargar / Actualizar datos", expanded=not st.session_state.data_loaded):
+            st.caption("Sube nuevos archivos para actualizar la base persistente.")
+            uploaded_files_update = st.file_uploader(
+                "Seleccionar Archivos",
+                type=['xlsx', 'xls', 'xml', 'html'],
                 accept_multiple_files=True,
-                label_visibility="collapsed"
+                label_visibility="collapsed",
+                key="update_files_uploader"
             )
-    
-            # Process Button logic
-            if uploaded_files:
-                if st.sidebar.button("Procesar Archivos", type="primary"):
-                    loading = show_loading_screen("Limpiando y consolidando datos...")
-                    try:
-                        # Separate KPI/Proyecciones, Mediciones, and standard files
-                        kpi_files = []
-                        data_files = []
-                        med_files = []
-                        for f in uploaded_files:
-                            fname = f.name.lower()
-                            if 'kpi' in fname or 'proyecci' in fname:
-                                kpi_files.append(f)
-                            elif 'medicion' in fname:
-                                med_files.append(f)
-                            else:
-                                data_files.append(f)
-                        
-                        # 1. Process standard data files
-                        if data_files:
-                            combined_df = load_and_clean_data(data_files)
-                            if not combined_df.empty:
-                                st.session_state.db_manager.ingest_data(combined_df, table_name='fishtalk_data')
-                                
-                        # 2. Process Mediciones files
-                        for mf in med_files:
-                            st.session_state.db_manager.ingest_mediciones_data(mf)
-                        
-                        # 3. Process KPI/Proyecciones files
-                        for kf in kpi_files:
-                            st.session_state.db_manager.ingest_kpis_proyecciones(kf)
-                        
-                        has_any_data = data_files or kpi_files or med_files
-                        if has_any_data:
-                            # Reset param_config so it re-initializes from new data
-                            if 'param_config' in st.session_state:
-                                del st.session_state.param_config
-                            st.session_state.data_loaded = True
-                            hide_loading_screen(loading)
-                            st.success("Datos procesados correctamente.")
-                            st.rerun()
-                        else:
-                            hide_loading_screen(loading)
-                            st.warning("Los archivos no contenían datos válidos.")
-                    except Exception as e:
-                        if loading: loading.empty()
-                        st.error(f"Error crítico al procesar: {str(e)}")
-                        with st.expander("Detalles técnicos"):
-                            st.text(traceback.format_exc())
+            process_uploaded_files(uploaded_files_update, "Procesar archivos", "process_update_files_btn")
+
+        # Render filters regardless; if there is no data, they appear empty without blocking access.
+        med_meta = st.session_state.db_manager.get_mediciones_metadata()
+        med_bounds = st.session_state.db_manager.get_mediciones_date_range()
+        kpi_thresholds = get_kpi_config_thresholds() or st.session_state.db_manager.get_kpi_thresholds()
+        proj_meta = st.session_state.db_manager.get_proyecciones_metadata()
+        filters = render_filters(
+            st.session_state.db_manager,
+            mediciones_meta=med_meta,
+            mediciones_date_bounds=med_bounds,
+            kpi_thresholds=kpi_thresholds,
+            proyecciones_meta=proj_meta,
+        )
     
         # --- Main Content ---
         if 'data_loaded' in st.session_state and st.session_state.data_loaded:
@@ -1070,16 +1084,7 @@ def main():
 
     # Empty state when NO data loaded
     if 'data_loaded' not in st.session_state or not st.session_state.data_loaded:
-        st.markdown(
-            """
-            <div style='display: flex; flex-direction: column; align-items: center; justify-content: center; height: 50vh; opacity: 0.6;'>
-                <div style='font-size: 3rem; margin-bottom: 1rem;'>📂</div>
-                <h3>Los datos aparecerán aquí</h3>
-                <p>Comienza subiendo tus archivos Excel en el panel lateral.</p>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
+        st.info("Aún no hay datos cargados en la base. Usa 'Cargar / Actualizar datos' en el panel lateral.")
 
 if __name__ == "__main__":
     main()
