@@ -115,6 +115,25 @@ def inject_styles():
             border-color: var(--cermaq-sidebar-accent) !important;
             color: #FFFFFF !important;
         }
+
+        /* Specific fix: 'Todos los departamentos' checkbox tick */
+        [data-testid="stSidebar"] .st-key-all_depts input[type="checkbox"] {
+            accent-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] .st-key-all_depts [role="checkbox"] {
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] .st-key-all_depts [role="checkbox"][aria-checked="true"],
+        [data-testid="stSidebar"] .st-key-all_depts button[role="checkbox"][aria-pressed="true"] {
+            background-color: var(--cermaq-sidebar-accent) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+            color: #FFFFFF !important;
+        }
+        [data-testid="stSidebar"] .st-key-all_depts svg,
+        [data-testid="stSidebar"] .st-key-all_depts svg path {
+            fill: var(--cermaq-sidebar-accent) !important;
+            stroke: var(--cermaq-sidebar-accent) !important;
+        }
         /* Keep checkbox/radio widgets in sidebar accent even with generic pressed styles */
         [data-testid="stSidebar"] button[role="checkbox"][aria-pressed="true"],
         [data-testid="stSidebar"] button[role="radio"][aria-pressed="true"] {
