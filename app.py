@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import datetime as dt
+import copy
 from src.filters import render_filters
 from src.data_processing import load_and_clean_data
 from src.db_manager import DBManager
@@ -196,6 +197,8 @@ def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
                 del st.session_state.param_config
 
             st.cache_data.clear()
+            st.session_state.applied_filters = None
+            st.session_state.applied_filters_key = None
 
             st.session_state.data_loaded = st.session_state.db_manager.has_any_data()
             hide_loading_screen(loading)
@@ -286,8 +289,14 @@ def main():
 
         # State for filters
         filters = {}
+        draft_filters = {}
         med_bounds = (None, None)
         kpi_thresholds = {}
+
+        if 'applied_filters' not in st.session_state:
+            st.session_state.applied_filters = None
+        if 'applied_filters_key' not in st.session_state:
+            st.session_state.applied_filters_key = None
 
         with st.sidebar.expander("🔄 Cargar / Actualizar datos", expanded=not st.session_state.data_loaded):
             st.caption("Sube nuevos archivos para actualizar la base persistente.")
@@ -305,16 +314,40 @@ def main():
         med_bounds = _cached_mediciones_date_range(st.session_state.db_manager, data_version)
         kpi_thresholds = get_kpi_config_thresholds() or _cached_kpi_thresholds(st.session_state.db_manager, data_version)
         proj_meta = _cached_proyecciones_metadata(st.session_state.db_manager, data_version)
-        filters = render_filters(
+        draft_filters = render_filters(
             st.session_state.db_manager,
             mediciones_meta=med_meta,
             mediciones_date_bounds=med_bounds,
             kpi_thresholds=kpi_thresholds,
             proyecciones_meta=proj_meta,
         )
-    
+
+        draft_filters_key = _cache_key(draft_filters)
+        applied_filters = st.session_state.get('applied_filters')
+        applied_filters_key = st.session_state.get('applied_filters_key')
+
+        with st.sidebar:
+            st.markdown("---")
+            apply_clicked = st.button("✅ Listo", type="primary", key="apply_filters_btn", use_container_width=True)
+
+        if apply_clicked:
+            st.session_state.applied_filters = copy.deepcopy(draft_filters)
+            st.session_state.applied_filters_key = draft_filters_key
+            st.rerun()
+
+        if st.session_state.applied_filters is not None:
+            filters = copy.deepcopy(st.session_state.applied_filters)
+            has_pending = draft_filters_key != st.session_state.get('applied_filters_key')
+            if has_pending:
+                st.sidebar.warning("Tienes cambios sin aplicar. Presiona 'Listo'.")
+        else:
+            filters = {}
+
         # --- Main Content ---
         if 'data_loaded' in st.session_state and st.session_state.data_loaded:
+            if not filters:
+                st.info("Selecciona filtros en el panel lateral y presiona 'Listo' para consultar.")
+                return
             
             # Inject param_ranges into filters
             filters['param_ranges'] = get_range_filters('fishtalk_data')

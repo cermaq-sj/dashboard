@@ -152,9 +152,9 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
                'nombre de grupo', 'generaci', 'especies', 'cliente', 'qtl', 'seleccion genomica']
     
     # Get column types efficiently
+    numeric_types = ['DOUBLE', 'FLOAT', 'DECIMAL', 'BIGINT', 'INTEGER', 'INT', 'HUGEINT', 'SMALLINT', 'TINYINT', 'UBIGINT', 'UINTEGER', 'USMALLINT', 'UTINYINT']
     try:
         desc = db_manager.query("DESCRIBE fishtalk_data")
-        numeric_types = ['DOUBLE', 'FLOAT', 'DECIMAL', 'BIGINT', 'INTEGER', 'INT', 'HUGEINT', 'SMALLINT', 'TINYINT', 'UBIGINT', 'UINTEGER', 'USMALLINT', 'UTINYINT']
         col_type_map = {row['column_name']: row['column_type'] for _, row in desc.iterrows()}
     except Exception as e:
         col_type_map = {}
@@ -167,8 +167,8 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
         return ''.join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
     # Special handling for Mediciones Columns
-    # We identify them by the metadata or by keywords if metadata fails
-    mediciones_meta = db_manager.get_mediciones_metadata()
+    # Use provided metadata (already computed/cached in app) to avoid extra queries.
+    mediciones_meta = mediciones_meta or {}
     mediciones_keywords = ['aluminio', 'cobre', 'hierro', 'plomo', 'horario', 'lugar de muestreo']
     mediciones_cols = []
 

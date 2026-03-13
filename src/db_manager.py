@@ -14,10 +14,18 @@ class DBManager:
         self.connected_db = ':memory:'
         self.connection_error = None
         self.data_revision = 0
+        self._cache_revision = -1
+        self._simple_cache = {}
         self.con = self._connect()
 
     def _bump_revision(self):
         self.data_revision += 1
+
+    def _get_cache(self):
+        if self._cache_revision != self.data_revision:
+            self._simple_cache = {}
+            self._cache_revision = self.data_revision
+        return self._simple_cache
 
     def _sanitize_secret(self, value):
         if value is None:
@@ -666,7 +674,28 @@ class DBManager:
         Executes a raw SQL query and returns a pandas DataFrame.
         """
         try:
-            return self.con.execute(sql).df()
+            sql_stripped = sql.strip()
+            sql_norm = ' '.join(sql_stripped.split()).lower()
+            cacheable = (
+                sql_norm.startswith('describe ')
+                or sql_norm.startswith('show ')
+                or sql_norm.startswith('select distinct ')
+                or sql_norm.startswith('select min(')
+                or sql_norm.startswith('select max(')
+            )
+
+            if cacheable:
+                cache = self._get_cache()
+                cache_key = ('query', sql_norm)
+                if cache_key in cache:
+                    return cache[cache_key].copy(deep=False)
+
+            df = self.con.execute(sql).df()
+
+            if cacheable and len(df) <= 5000:
+                self._get_cache()[('query', sql_norm)] = df
+
+            return df
         except Exception as e:
             print(f"SQL Error: {e}")
             return pd.DataFrame()
@@ -761,14 +790,26 @@ class DBManager:
     def get_unique_values(self, col_name: str, table_name: str = 'fishtalk_data'):
         """Get unique values for a specific column."""
         try:
+            cache_key = ('unique_values', table_name, str(col_name).lower())
+            cache = self._get_cache()
+            if cache_key in cache:
+                return list(cache[cache_key])
+
             # Check if column exists (case insensitive)
             cols = [c[0] for c in self.con.execute(f"DESCRIBE {table_name}").fetchall()]
             resolved_col = self._resolve_col(col_name, cols)
             
             if not resolved_col:
                 return []
-                
-            return [row[0] for row in self.con.execute(f'SELECT DISTINCT "{resolved_col}" FROM {table_name} WHERE "{resolved_col}" IS NOT NULL ORDER BY 1').fetchall()]
+
+            values = [
+                row[0]
+                for row in self.con.execute(
+                    f'SELECT DISTINCT "{resolved_col}" FROM {table_name} WHERE "{resolved_col}" IS NOT NULL ORDER BY 1'
+                ).fetchall()
+            ]
+            cache[cache_key] = tuple(values)
+            return values
         except Exception as e:
             print(f"Error getting unique values for {col_name}: {e}")
             return []
@@ -778,6 +819,11 @@ class DBManager:
         Get min and max values for a column.
         """
         try:
+            cache_key = ('min_max', table_name, str(column_name).lower())
+            cache = self._get_cache()
+            if cache_key in cache:
+                return cache[cache_key]
+
             cols = [c[0] for c in self.con.execute(f"DESCRIBE {table_name}").fetchall()]
             col_match = self._resolve_col(column_name, cols)
             
@@ -786,6 +832,7 @@ class DBManager:
                 
             query = f'SELECT MIN("{col_match}"), MAX("{col_match}") FROM {table_name}'
             min_val, max_val = self.con.execute(query).fetchone()
+            cache[cache_key] = (min_val, max_val)
             return min_val, max_val
         except Exception as e:
             print(f"Error getting min/max for {column_name}: {e}")
@@ -1017,6 +1064,11 @@ class DBManager:
         Get min and max values for a column.
         """
         try:
+            cache_key = ('min_max', table_name, str(column_name).lower())
+            cache = self._get_cache()
+            if cache_key in cache:
+                return cache[cache_key]
+
             cols = [c[0] for c in self.con.execute(f"DESCRIBE {table_name}").fetchall()]
             col_match = self._resolve_col(column_name, cols)
             
@@ -1024,8 +1076,10 @@ class DBManager:
                 return None, None
                 
             query = f'SELECT MIN("{col_match}"), MAX("{col_match}") FROM {table_name}'
-            return self.con.execute(query).fetchone()
-        except:
+            min_val, max_val = self.con.execute(query).fetchone()
+            cache[cache_key] = (min_val, max_val)
+            return min_val, max_val
+        except Exception:
             return None, None
             
     def get_filtered_data(self, filters: dict, table_name: str = 'fishtalk_data'):
