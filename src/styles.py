@@ -145,6 +145,17 @@ def inject_styles():
             background-color: #353C49 !important;
             border-color: #485166 !important;
         }
+
+        /* 'Listo' button (first sidebar stButton) */
+        div[data-testid="stSidebar"] div.stButton:first-of-type > button {
+            background-color: #00BD88 !important;
+            border-color: #00BD88 !important;
+            color: #FFFFFF !important;
+        }
+        div[data-testid="stSidebar"] div.stButton:first-of-type > button:hover {
+            background-color: #00A376 !important;
+            border-color: #00A376 !important;
+        }
         
         /* Status Info Messages */
         .stAlert {
