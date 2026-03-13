@@ -58,6 +58,31 @@ def inject_styles():
         [data-testid="stSidebar"] [data-baseweb="slider"] > div > div > div {
             background-color: var(--cermaq-sidebar-accent) !important;
         }
+        /* Slider value/tick labels (e.g., Days range numbers) */
+        [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid*="TickBar"],
+        [data-testid="stSidebar"] [data-testid="stSlider"] [data-testid*="TickBar"] * {
+            color: var(--cermaq-sidebar-accent) !important;
+        }
+
+        /* Checkbox square (e.g., Todos los departamentos/unidades) */
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] input:checked + div,
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"][aria-checked="true"] {
+            background-color: var(--cermaq-sidebar-accent) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] input + div {
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
+
+        /* Radio selected dot (e.g., Dia/Semana in Agrupacion temporal) */
+        [data-testid="stSidebar"] [data-baseweb="radio"] input:checked + div,
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"][aria-checked="true"] {
+            border-color: var(--cermaq-sidebar-accent) !important;
+            background-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="radio"] input + div {
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
         [data-testid="stSidebar"] [data-baseweb="select"] > div {
             border-color: #2E3E45 !important;
         }
