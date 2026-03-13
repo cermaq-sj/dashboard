@@ -18,6 +18,35 @@ DEFAULT_GROUPS = {
 }
 DEFAULT_EXTRA_GROUPS = ["Mortalidad por Causa", "Otras Variables"]
 
+CAUSE_NAMES = [
+    'Embrionaria', 'Deforme Embrionaria', 'Micosis', 'Daño Mecánico Otros',
+    'Desadaptado', 'Deforme', 'Descompuesto', 'Aborto', 'Daño Mecánico',
+    'Sin causa Aparente', 'Maduro', 'Muestras', 'Operculo Corto',
+    'Rezagado', 'Nefrocalcinosis', 'Exofialosis', 'Daño Mecánico por Muestreo',
+]
+
+
+def get_virtual_fishtalk_variables() -> list:
+    """Derived variables shown in sidebar/config (visual aliases only)."""
+    base = [
+        {'name': 'FCR Económico Acumulado', 'group': 'Económico'},
+        {'name': 'FCR Biológico Acumulado', 'group': 'Productivos'},
+        {'name': 'GF3 Acumulado', 'group': 'Productivos'},
+        {'name': 'SGR Acumulado', 'group': 'Productivos'},
+        {'name': 'SFR Acumulado', 'group': 'Productivos'},
+        {'name': '% Mortalidad Acumulada', 'group': 'Productivos'},
+        {'name': '% Mortalidad diaria', 'group': 'Productivos'},
+        {'name': '% Pérdida Acumulada', 'group': 'Productivos'},
+        {'name': 'Pérdida diaria %', 'group': 'Productivos'},
+        {'name': '% Eliminación Acumulada', 'group': 'Productivos'},
+        {'name': 'Eliminación diaria %', 'group': 'Productivos'},
+        {'name': 'Peso promedio', 'group': 'Productivos'},
+    ]
+
+    cause_daily = [{'name': f'% Mortalidad {c} Diaria', 'group': 'Mortalidad por Causa'} for c in CAUSE_NAMES]
+    cause_acc = [{'name': f'% Mortalidad {c} Acumulada', 'group': 'Mortalidad por Causa'} for c in CAUSE_NAMES]
+    return base + cause_daily + cause_acc
+
 
 def _normalize(text):
     text = unicodedata.normalize('NFKD', str(text))
@@ -130,7 +159,27 @@ def _build_default_param_config(db_manager):
                 'visible': True,
                 'grupo': grp,
                 'orden': idx + 1,
+                'virtual': False,
             }
+
+        if tbl == 'fishtalk_data':
+            next_order = len(tbl_config) + 1
+            for virtual in get_virtual_fishtalk_variables():
+                var_name = virtual['name']
+                if var_name in tbl_config:
+                    continue
+                tbl_config[var_name] = {
+                    'alias': var_name,
+                    'min': 0.0,
+                    'max': 0.0,
+                    'data_min': 0.0,
+                    'data_max': 0.0,
+                    'visible': True,
+                    'grupo': virtual['group'],
+                    'orden': next_order,
+                    'virtual': True,
+                }
+                next_order += 1
         config[tbl] = tbl_config
 
     try:
@@ -206,6 +255,7 @@ def _merge_saved_config(default_cfg, saved_cfg):
             entry['max'] = _to_float(saved_entry.get('max', entry['max']), entry['max'])
             entry['visible'] = bool(saved_entry.get('visible', entry['visible']))
             entry['orden'] = _to_int(saved_entry.get('orden', entry['orden']), entry['orden'])
+            entry['virtual'] = bool(saved_entry.get('virtual', entry.get('virtual', False)))
             if tbl == 'fishtalk_data':
                 entry['grupo'] = _sanitize_folder_name(saved_entry.get('grupo', entry['grupo'])) or entry['grupo']
 
@@ -427,6 +477,8 @@ def _render_table_config(title: str, table_key: str):
         return
 
     st.subheader(title)
+    if table_key == 'fishtalk_data':
+        st.caption("Las variables derivadas tambien aparecen aqui. Cambiar su nombre/carpeta es visual y no altera la logica matematica.")
 
     folder_options = get_sidebar_group_order('fishtalk_data', include_hidden=True)
     if not folder_options:
@@ -551,6 +603,8 @@ def get_range_filters(table_key: str = 'fishtalk_data') -> dict:
     config = st.session_state.get('param_config', {}).get(table_key, {})
     modified = {}
     for col, cfg in config.items():
+        if cfg.get('virtual', False):
+            continue
         if cfg.get('min') != cfg.get('data_min') or cfg.get('max') != cfg.get('data_max'):
             modified[col] = (cfg.get('min'), cfg.get('max'))
     return modified

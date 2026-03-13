@@ -3,11 +3,13 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, time
 from src.config_params import (
+    CAUSE_NAMES,
     get_alias_map,
     get_hidden_variables,
     get_variable_group_overrides,
     get_variable_order_overrides,
     get_sidebar_group_order,
+    get_virtual_fishtalk_variables,
 )
 
 def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None, kpi_thresholds=None, proyecciones_meta=None):
@@ -253,29 +255,15 @@ def render_filters(db_manager, mediciones_meta=None, mediciones_date_bounds=None
         if variable_name not in grouped_cols[group_name]:
             grouped_cols[group_name].append(variable_name)
 
-    # Inject our dynamic column so the user can select it
-    # We put it in the Economic group
-    _add_group_var("Económico", "FCR Económico Acumulado")
-    _add_group_var("Productivos", "FCR Biológico Acumulado")
-    _add_group_var("Productivos", "GF3 Acumulado")
-    _add_group_var("Productivos", "SGR Acumulado")
-    _add_group_var("Productivos", "SFR Acumulado")
-    _add_group_var("Productivos", "% Mortalidad Acumulada")
-    _add_group_var("Productivos", "% Mortalidad diaria")
-    _add_group_var("Productivos", "% Pérdida Acumulada")
-    _add_group_var("Productivos", "Pérdida diaria %")
-    _add_group_var("Productivos", "% Eliminación Acumulada")
-    _add_group_var("Productivos", "Eliminación diaria %")
-    _add_group_var("Productivos", "Peso promedio")
+    # Inject derived/virtual variables (user can rename/re-group in config).
+    for item in get_virtual_fishtalk_variables():
+        var_name = item['name']
+        if var_name in hidden_vars:
+            continue
+        target_group = group_overrides.get(var_name, item['group'])
+        _add_group_var(target_group, var_name)
 
-    # Mortality by Cause group
-    cause_names = [
-        'Embrionaria', 'Deforme Embrionaria', 'Micosis', 'Daño Mecánico Otros',
-        'Desadaptado', 'Deforme', 'Descompuesto', 'Aborto', 'Daño Mecánico',
-        'Sin causa Aparente', 'Maduro', 'Muestras', 'Operculo Corto',
-        'Rezagado', 'Nefrocalcinosis', 'Exofialosis', 'Daño Mecánico por Muestreo',
-    ]
-    grouped_cols["Mortalidad por Causa"] = [f"% Mortalidad {c} Diaria" for c in cause_names] + [f"% Mortalidad {c} Acumulada" for c in cause_names]
+    cause_names = list(CAUSE_NAMES)
 
     # Render Multiselects per group
     selected_vars = []
