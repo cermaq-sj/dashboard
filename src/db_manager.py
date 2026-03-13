@@ -1,6 +1,7 @@
 import os
 import re
 import unicodedata
+from collections.abc import Mapping
 
 import duckdb
 import pandas as pd
@@ -10,36 +11,103 @@ class DBManager:
     def __init__(self):
         self.connection_mode = 'local'
         self.connected_db = ':memory:'
+        self.connection_error = None
         self.con = self._connect()
+
+    def _sanitize_secret(self, value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if len(text) >= 2 and ((text[0] == '"' and text[-1] == '"') or (text[0] == "'" and text[-1] == "'")):
+            text = text[1:-1].strip()
+        return text or None
+
+    def _find_key_in_mapping(self, data, key: str):
+        if not isinstance(data, Mapping):
+            return None
+
+        target_lower = key.lower()
+
+        for k, v in data.items():
+            if str(k) == key or str(k).lower() == target_lower:
+                return v
+
+        for _, v in data.items():
+            found = self._find_key_in_mapping(v, key)
+            if found is not None:
+                return found
+
+        return None
 
     def _load_secret_value(self, key: str):
         env_val = os.getenv(key)
         if env_val:
             return env_val
 
+        for env_key, env_value in os.environ.items():
+            if env_key.lower() == key.lower() and env_value:
+                return env_value
+
         try:
             import streamlit as st
             if key in st.secrets:
                 return st.secrets[key]
+            nested = self._find_key_in_mapping(st.secrets, key)
+            if nested is not None:
+                return nested
         except Exception:
             pass
 
         return None
 
     def _connect(self):
-        token = self._load_secret_value('MOTHERDUCK_TOKEN')
-        database = self._load_secret_value('MOTHERDUCK_DB')
+        token = self._sanitize_secret(
+            self._load_secret_value('MOTHERDUCK_TOKEN')
+            or self._load_secret_value('MOTHERDUCK_ACCESS_TOKEN')
+            or self._load_secret_value('DB_TOKEN')
+        )
+        database = self._sanitize_secret(
+            self._load_secret_value('MOTHERDUCK_DB')
+            or self._load_secret_value('MOTHERDUCK_DATABASE')
+            or self._load_secret_value('DB_NAME')
+            or self._load_secret_value('DB_DATABASE')
+        )
 
-        if token and database:
+        if token:
+            errors = []
+
+            if database:
+                try:
+                    con = duckdb.connect(f"md:{database}?motherduck_token={token}")
+                    self.connection_mode = 'motherduck'
+                    self.connected_db = database
+                    self.connection_error = None
+                    print(f"Connected to MotherDuck database '{database}'")
+                    return con
+                except Exception as e:
+                    errors.append(f"connect_db_failed({type(e).__name__})")
+
             try:
                 con = duckdb.connect(f"md:?motherduck_token={token}")
-                con.execute(f"USE {self._quote_ident(database)}")
+                target_db = database or 'my_db'
+
+                try:
+                    con.execute(f"CREATE DATABASE IF NOT EXISTS {self._quote_ident(target_db)}")
+                except Exception:
+                    pass
+
+                con.execute(f"USE {self._quote_ident(target_db)}")
                 self.connection_mode = 'motherduck'
-                self.connected_db = database
-                print(f"Connected to MotherDuck database '{database}'")
+                self.connected_db = target_db
+                self.connection_error = None
+                print(f"Connected to MotherDuck database '{target_db}'")
                 return con
             except Exception as e:
-                print(f"MotherDuck connection failed, falling back to local memory DB: {e}")
+                errors.append(f"connect_or_use_failed({type(e).__name__})")
+                self.connection_error = '; '.join(errors)
+                print(f"MotherDuck connection failed, falling back to local memory DB: {self.connection_error}")
+        else:
+            self.connection_error = 'missing_motherduck_token'
 
         self.connection_mode = 'local'
         self.connected_db = ':memory:'
@@ -118,6 +186,7 @@ class DBManager:
         return {
             'mode': self.connection_mode,
             'database': self.connected_db,
+            'connection_error': self.connection_error,
             'has_data': self.has_any_data(),
             'rows': {
                 'fishtalk_data': self._table_row_count('fishtalk_data'),

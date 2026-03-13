@@ -172,6 +172,8 @@ def main():
                      st.caption("☁️ MotherDuck")
                  else:
                      st.caption("💻 Local")
+                     if db_status.get('connection_error'):
+                         st.caption("⚠️ Revisa Secrets de MotherDuck")
             else:
                  st.markdown("⚪ <span style='color:#A0AEC0'>Esperando datos</span>", unsafe_allow_html=True)
                  
