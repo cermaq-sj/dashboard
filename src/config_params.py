@@ -1,11 +1,14 @@
 import copy
 import unicodedata
+import json
 
 import pandas as pd
 import streamlit as st
 
 
 CONFIG_STORE_KEY = "param_config_v1"
+CONFIG_DRAFT_KEY = "param_config_draft"
+CONFIG_DRAFT_SIG_KEY = "param_config_draft_source_sig"
 
 # Default group classification keywords
 DEFAULT_GROUPS = {
@@ -321,6 +324,13 @@ def _init_param_config(db_manager, force_reload=False):
     st.session_state.param_config = _merge_saved_config(default_cfg, session_cfg)
 
 
+def _config_signature(payload) -> str:
+    try:
+        return json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
+    except Exception:
+        return str(type(payload))
+
+
 def ensure_runtime_config(db_manager):
     if not st.session_state.get('_param_config_runtime_initialized', False):
         _init_param_config(db_manager, force_reload=True)
@@ -335,37 +345,63 @@ def _persist_full_config(db_manager):
 
 def render_config_tab(db_manager):
     _init_param_config(db_manager)
+    base_sig = _config_signature(st.session_state.param_config)
+
+    if (
+        CONFIG_DRAFT_KEY not in st.session_state
+        or st.session_state.get(CONFIG_DRAFT_SIG_KEY) != base_sig
+    ):
+        st.session_state[CONFIG_DRAFT_KEY] = copy.deepcopy(st.session_state.param_config)
+        st.session_state[CONFIG_DRAFT_SIG_KEY] = base_sig
+
+    draft_cfg = st.session_state[CONFIG_DRAFT_KEY]
 
     st.header("Configuracion de Parametros")
     st.caption("Edita alias, rangos y carpetas. Usa 'Guardar cambios' para persistir en la base.")
 
-    _render_folder_manager()
+    _render_folder_manager(draft_cfg)
     st.markdown("---")
 
-    _render_table_config("Produccion (Excel Pesado)", "fishtalk_data")
+    _render_table_config(draft_cfg, "Produccion (Excel Pesado)", "fishtalk_data")
     st.markdown("---")
 
-    _render_table_config("Mediciones (Ambiental)", "mediciones_data")
+    _render_table_config(draft_cfg, "Mediciones (Ambiental)", "mediciones_data")
     st.markdown("---")
 
-    _render_kpi_config()
+    _render_kpi_config(draft_cfg)
     st.markdown("---")
 
-    if st.button("Guardar cambios", type="primary", key="save_param_config_btn", use_container_width=True):
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        save_clicked = st.button("Guardar cambios", type="primary", key="save_param_config_btn", use_container_width=True)
+    with c2:
+        discard_clicked = st.button("Descartar cambios", type="secondary", key="discard_param_config_btn", use_container_width=True)
+
+    if discard_clicked:
+        st.session_state[CONFIG_DRAFT_KEY] = copy.deepcopy(st.session_state.param_config)
+        st.session_state[CONFIG_DRAFT_SIG_KEY] = _config_signature(st.session_state.param_config)
+        st.info("Cambios descartados.")
+        st.rerun()
+
+    if save_clicked:
+        st.session_state.param_config = copy.deepcopy(draft_cfg)
         ok = _persist_full_config(db_manager)
         if ok:
             st.cache_data.clear()
+            st.session_state[CONFIG_DRAFT_KEY] = copy.deepcopy(st.session_state.param_config)
+            st.session_state[CONFIG_DRAFT_SIG_KEY] = _config_signature(st.session_state.param_config)
             st.success("Cambios guardados correctamente.")
+            st.rerun()
         else:
             st.error("No se pudieron guardar los cambios en la base.")
 
 
-def _render_folder_manager():
+def _render_folder_manager(config):
     st.subheader("Carpetas del Sidebar")
     st.caption("Crea, elimina, oculta y ordena carpetas. Variables de carpetas eliminadas pasan a 'Otras Variables'.")
 
-    folder_cfg = st.session_state.param_config.setdefault('folder_config', {}).setdefault('fishtalk_data', {})
-    fish_cfg = st.session_state.param_config.get('fishtalk_data', {})
+    folder_cfg = config.setdefault('folder_config', {}).setdefault('fishtalk_data', {})
+    fish_cfg = config.get('fishtalk_data', {})
 
     c1, c2 = st.columns([4, 1])
     with c1:
@@ -444,10 +480,10 @@ def _render_folder_manager():
                         if _sanitize_folder_name(cfg.get('grupo', '')) == name:
                             cfg['grupo'] = 'Otras Variables'
 
-            _ensure_folder_consistency(st.session_state.param_config)
+            _ensure_folder_consistency(config)
 
     with st.expander("Ver variables por carpeta", expanded=False):
-        folder_cfg = st.session_state.param_config.get('folder_config', {}).get('fishtalk_data', {})
+        folder_cfg = config.get('folder_config', {}).get('fishtalk_data', {})
         ordered_names = [
             name for name, _ in sorted(folder_cfg.items(), key=lambda kv: _to_int(kv[1].get('order', 999999), 999999))
         ]
@@ -470,9 +506,9 @@ def _render_folder_manager():
             )
 
 
-def _render_table_config(title: str, table_key: str):
-    config = st.session_state.param_config.get(table_key, {})
-    if not config:
+def _render_table_config(config_root, title: str, table_key: str):
+    table_config = config_root.get(table_key, {})
+    if not table_config:
         st.info(f"No hay variables numericas en {title}.")
         return
 
@@ -485,7 +521,7 @@ def _render_table_config(title: str, table_key: str):
         folder_options = list(DEFAULT_GROUPS.keys()) + DEFAULT_EXTRA_GROUPS
 
     rows = []
-    for col_name, cfg in config.items():
+    for col_name, cfg in table_config.items():
         rows.append({
             'Visible': cfg.get('visible', True),
             'Variable Original': col_name,
@@ -529,9 +565,9 @@ def _render_table_config(title: str, table_key: str):
     if edited_df is not None:
         for _, row in edited_df.iterrows():
             col_name = row['Variable Original']
-            if col_name not in st.session_state.param_config[table_key]:
+            if col_name not in table_config:
                 continue
-            entry = st.session_state.param_config[table_key][col_name]
+            entry = table_config[col_name]
             entry['alias'] = str(row['Nombre Personalizado'])
             entry['min'] = _to_float(row['Desde'], entry.get('min', 0.0))
             entry['max'] = _to_float(row['Hasta'], entry.get('max', 0.0))
@@ -544,8 +580,8 @@ def _render_table_config(title: str, table_key: str):
                     entry['grupo'] = selected_folder
 
 
-def _render_kpi_config():
-    kpi_config = st.session_state.param_config.get('kpi_config', {})
+def _render_kpi_config(config_root):
+    kpi_config = config_root.get('kpi_config', {})
     if not kpi_config:
         st.info("No hay KPIs cargados. Sube el archivo 'KPIs y Proyecciones por Batch'.")
         return
@@ -583,9 +619,9 @@ def _render_kpi_config():
     if edited_df is not None:
         for _, row in edited_df.iterrows():
             key = f"{row['Tipo KPI']}|{row['Departamento']}"
-            if key not in st.session_state.param_config['kpi_config']:
+            if key not in kpi_config:
                 continue
-            entry = st.session_state.param_config['kpi_config'][key]
+            entry = kpi_config[key]
             entry['umbral'] = _to_float(row['Umbral (Menor a)'], entry['umbral'])
             entry['visible'] = bool(row['Visible'])
 
