@@ -146,13 +146,15 @@ def inject_styles():
             border-color: #485166 !important;
         }
 
-        /* 'Listo' button (first sidebar stButton) */
-        div[data-testid="stSidebar"] div.stButton:first-of-type > button {
+        /* 'Listo' button (anchored selector) */
+        div[data-testid="stSidebar"] #listo-btn-anchor + div button,
+        div[data-testid="stSidebar"] #listo-btn-anchor + div button[data-testid="baseButton-secondary"] {
             background-color: #2B303B !important;
             border: 1px solid #3A4250 !important;
             color: #E6EAF2 !important;
         }
-        div[data-testid="stSidebar"] div.stButton:first-of-type > button:hover {
+        div[data-testid="stSidebar"] #listo-btn-anchor + div button:hover,
+        div[data-testid="stSidebar"] #listo-btn-anchor + div button[data-testid="baseButton-secondary"]:hover {
             background-color: #353C49 !important;
             border-color: #485166 !important;
         }
