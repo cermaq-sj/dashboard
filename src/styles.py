@@ -30,6 +30,7 @@ def inject_styles():
             background-color: #0F1117;
             color: #FAFAFA;
             font-family: 'Inter', sans-serif;
+            --primary-color: #038d97;
         }
         /* Remove Streamlit default top padding */
         .block-container {
@@ -46,41 +47,42 @@ def inject_styles():
             --cermaq-sidebar-accent: #038d97;
         }
 
-        /* Sidebar selector accents (checkbox, radio, slider, select, tags) */
+        /* Sidebar selector accents (checkbox/radio) */
         [data-testid="stSidebar"] input[type="checkbox"],
-        [data-testid="stSidebar"] input[type="radio"] {
-            accent-color: var(--cermaq-sidebar-accent) !important;
-        }
+        [data-testid="stSidebar"] input[type="radio"],
         [data-testid="stSidebar"] [data-testid="stCheckbox"] input,
         [data-testid="stSidebar"] [data-testid="stRadio"] input {
             accent-color: var(--cermaq-sidebar-accent) !important;
         }
+
+        /* Baseweb checkbox/radio controls (square + circle) */
         [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"],
-        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] {
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"],
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] button[role="checkbox"],
+        [data-testid="stSidebar"] [data-testid="stRadio"] button[role="radio"] {
             border-color: var(--cermaq-sidebar-accent) !important;
+            outline-color: var(--cermaq-sidebar-accent) !important;
         }
-        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"] svg,
-        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] svg,
-        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"] svg path,
-        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"] svg path,
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"][aria-checked="true"],
+        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"][aria-checked="true"],
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] button[role="checkbox"][aria-checked="true"],
+        [data-testid="stSidebar"] [data-testid="stRadio"] button[role="radio"][aria-checked="true"],
+        [data-testid="stSidebar"] [data-testid="stCheckbox"] button[aria-pressed="true"],
+        [data-testid="stSidebar"] [data-testid="stRadio"] button[aria-pressed="true"] {
+            background-color: var(--cermaq-sidebar-accent) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+            color: #FFFFFF !important;
+        }
+
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] svg,
+        [data-testid="stSidebar"] [data-baseweb="radio"] svg,
+        [data-testid="stSidebar"] [data-baseweb="checkbox"] svg path,
+        [data-testid="stSidebar"] [data-baseweb="radio"] svg path,
         [data-testid="stSidebar"] [data-testid="stCheckbox"] svg,
         [data-testid="stSidebar"] [data-testid="stRadio"] svg {
             fill: var(--cermaq-sidebar-accent) !important;
             stroke: var(--cermaq-sidebar-accent) !important;
             color: var(--cermaq-sidebar-accent) !important;
-        }
-        [data-testid="stSidebar"] [data-baseweb="checkbox"] [role="checkbox"][aria-checked="true"],
-        [data-testid="stSidebar"] [data-baseweb="radio"] [role="radio"][aria-checked="true"] {
-            background-color: var(--cermaq-sidebar-accent) !important;
-            border-color: var(--cermaq-sidebar-accent) !important;
-        }
-        [data-testid="stSidebar"] [data-testid="stCheckbox"] [aria-checked="true"],
-        [data-testid="stSidebar"] [data-testid="stRadio"] [aria-checked="true"],
-        [data-testid="stSidebar"] button[role="checkbox"][aria-checked="true"],
-        [data-testid="stSidebar"] button[role="radio"][aria-checked="true"] {
-            background-color: var(--cermaq-sidebar-accent) !important;
-            border-color: var(--cermaq-sidebar-accent) !important;
-            color: #FFFFFF !important;
         }
         [data-testid="stSidebar"] [role="slider"] {
             background: var(--cermaq-sidebar-accent) !important;
@@ -114,8 +116,6 @@ def inject_styles():
             color: #FFFFFF !important;
         }
         /* Keep checkbox/radio widgets in sidebar accent even with generic pressed styles */
-        [data-testid="stSidebar"] [data-testid="stCheckbox"] button[aria-pressed="true"],
-        [data-testid="stSidebar"] [data-testid="stRadio"] button[aria-pressed="true"],
         [data-testid="stSidebar"] button[role="checkbox"][aria-pressed="true"],
         [data-testid="stSidebar"] button[role="radio"][aria-pressed="true"] {
             background-color: var(--cermaq-sidebar-accent) !important;
