@@ -43,6 +43,37 @@ def inject_styles():
         [data-testid="stSidebar"] {
             background-color: #161920;
             border-right: 1px solid #2B303B;
+            --cermaq-sidebar-accent: #038d97;
+        }
+
+        /* Sidebar selector accents (checkbox, radio, slider, select, tags) */
+        [data-testid="stSidebar"] input[type="checkbox"],
+        [data-testid="stSidebar"] input[type="radio"] {
+            accent-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [role="slider"] {
+            background: var(--cermaq-sidebar-accent) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="slider"] > div > div > div {
+            background-color: var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            border-color: #2E3E45 !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="select"]:focus-within > div {
+            border-color: var(--cermaq-sidebar-accent) !important;
+            box-shadow: 0 0 0 1px var(--cermaq-sidebar-accent) !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="tag"] {
+            background-color: rgba(3, 141, 151, 0.22) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+            color: #D9F6F8 !important;
+        }
+        [data-testid="stSidebar"] button[aria-pressed="true"] {
+            background-color: var(--cermaq-sidebar-accent) !important;
+            border-color: var(--cermaq-sidebar-accent) !important;
+            color: #FFFFFF !important;
         }
         
         /* KPI Card Styling */
@@ -65,12 +96,16 @@ def inject_styles():
         
         /* Custom FCR Sidebar Button */
         div[data-testid="stSidebar"] button[kind="primary"] {
-            background-color: #1b5e20 !important;
-            border-color: #1b5e20 !important;
+            background-color: #038d97 !important;
+            border-color: #038d97 !important;
             color: white !important;
             font-weight: 600 !important;
             width: 100% !important;
             margin-top: 10px;
+        }
+        div[data-testid="stSidebar"] button[kind="primary"]:hover {
+            background-color: #027a82 !important;
+            border-color: #027a82 !important;
         }
         div[data-testid="stSidebar"] button[kind="secondary"] {
             background-color: #2B303B !important;
