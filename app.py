@@ -301,7 +301,7 @@ def main():
             st.session_state.applied_filters_key = None
 
         with st.sidebar:
-            apply_clicked = st.button("✅ Listo", type="secondary", key="apply_filters_btn", use_container_width=True)
+            apply_clicked = st.button("✅ Listo", type="secondary", key="apply_filters_btn_v2", use_container_width=True)
             st.markdown("---")
 
         with st.sidebar.expander("🔄 Cargar / Actualizar datos", expanded=not st.session_state.data_loaded):
