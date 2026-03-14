@@ -794,7 +794,7 @@ def main():
                 with ctrl_col1:
                     chart_type = st.radio(
                         "Tipo de Gráfico",
-                        ['Líneas', 'Líneas + Marcadores', 'Barras', 'Área', 'Dispersión', 'Torta'],
+                        ['Líneas', 'Líneas + Marcadores', 'Barras', 'Área', 'Dispersión', 'Torta', 'Treemap', 'Pareto'],
                         horizontal=True,
                         index=0
                     )

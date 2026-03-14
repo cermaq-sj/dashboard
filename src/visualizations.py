@@ -2,7 +2,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: str = 'Overlay', x_axis_mode: str = 'Date', chart_type: str = 'Líneas', hover_mode: str = 'x unified', sum_units: bool = False, avg_units: bool = False, align_first: bool = False, highlight_points: list = None, unite_variables: bool = False, independent_axes: bool = False, rename_map: dict = None, pie_view_mode: str = "parents", kpi_thresholds: dict = None, active_kpis: list = None, proyecciones_df=None, variable_ranges: dict = None, uirevision_key: str = None):
+def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: str = 'Overlay', x_axis_mode: str = 'Date', chart_type: str = 'Líneas', hover_mode: str = 'x unified', sum_units: bool = False, avg_units: bool = False, align_first: bool = False, highlight_points: list = None, unite_variables: bool = False, independent_axes: bool = False, rename_map: dict = None, pie_view_mode: str = "parents", kpi_thresholds: dict = None, active_kpis: list = None, proyecciones_df=None, variable_ranges: dict = None, uirevision_key: str | None = None):
     """
     Creates the main Plotly chart.
     
@@ -506,6 +506,153 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
                 itemdoubleclick="toggleothers"
             )
         )
+        return fig
+
+    if chart_type == 'Treemap':
+        group_col = lote_col if lote_col else 'SeriesName'
+        unique_groups = list(df[group_col].dropna().unique()) if group_col in df.columns else ['Total']
+
+        def _agg_for_var(group_df, var_name):
+            var_col = get_col(var_name)
+            if not var_col:
+                return None
+            series = _apply_visual_range(group_df[var_col], var_name, var_col)
+            num = pd.to_numeric(series, errors='coerce')
+            if num.dropna().empty:
+                return None
+            return float(num.max()) if 'acumulad' in str(var_name).lower() else float(num.sum())
+
+        ids = []
+        labels = []
+        parents = []
+        values = []
+
+        for group_name in unique_groups:
+            group_df = df[df[group_col] == group_name] if group_col in df.columns else df
+            if group_df.empty:
+                continue
+
+            parent_id = f"batch::{group_name}"
+            parent_sum = 0.0
+            leaves = []
+
+            for var in variables:
+                val = _agg_for_var(group_df, var)
+                if val is None or pd.isna(val) or val <= 0:
+                    continue
+                leaf_id = f"{parent_id}::{var}"
+                leaves.append((leaf_id, _display_name(var), parent_id, val))
+                parent_sum += float(val)
+
+            if not leaves:
+                continue
+
+            ids.append(parent_id)
+            labels.append(str(group_name))
+            parents.append('')
+            values.append(parent_sum)
+
+            for leaf_id, leaf_label, leaf_parent, leaf_value in leaves:
+                ids.append(leaf_id)
+                labels.append(leaf_label)
+                parents.append(leaf_parent)
+                values.append(leaf_value)
+
+        if not ids:
+            return go.Figure()
+
+        fig = go.Figure(go.Treemap(
+            ids=ids,
+            labels=labels,
+            parents=parents,
+            values=values,
+            branchvalues='total',
+            textinfo='label+percent parent',
+            hovertemplate='<b>%{label}</b><br>Valor: %{value:,.4f}<br>%{percentParent}<extra></extra>',
+        ))
+
+        fig.update_layout(
+            title_text='Treemap por lote y variable',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#A0AEC0'),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        if uirevision_key is not None:
+            fig.update_layout(uirevision=uirevision_key)
+        return fig
+
+    if chart_type == 'Pareto':
+        group_col = lote_col if lote_col else 'SeriesName'
+        unique_groups = list(df[group_col].dropna().unique()) if group_col in df.columns else ['Total']
+
+        def _agg_for_var(group_df, var_name):
+            var_col = get_col(var_name)
+            if not var_col:
+                return None
+            series = _apply_visual_range(group_df[var_col], var_name, var_col)
+            num = pd.to_numeric(series, errors='coerce')
+            if num.dropna().empty:
+                return None
+            return float(num.max()) if 'acumulad' in str(var_name).lower() else float(num.sum())
+
+        rows = []
+        many_groups = len(unique_groups) > 1
+        for group_name in unique_groups:
+            group_df = df[df[group_col] == group_name] if group_col in df.columns else df
+            if group_df.empty:
+                continue
+            for var in variables:
+                val = _agg_for_var(group_df, var)
+                if val is None or pd.isna(val) or val <= 0:
+                    continue
+                label = f"{group_name} · {_display_name(var)}" if many_groups else _display_name(var)
+                rows.append((label, float(val)))
+
+        if not rows:
+            return go.Figure()
+
+        p_df = pd.DataFrame(rows, columns=['label', 'value']).sort_values('value', ascending=False).reset_index(drop=True)
+        total = float(p_df['value'].sum())
+        p_df['cum_pct'] = (p_df['value'].cumsum() / total * 100.0) if total > 0 else 0.0
+
+        fig = make_subplots(specs=[[{'secondary_y': True}]])
+        fig.add_trace(
+            go.Bar(
+                x=p_df['label'],
+                y=p_df['value'],
+                name='Valor',
+                marker=dict(color='#4ECDC4'),
+                hovertemplate='<b>%{x}</b><br>Valor: %{y:,.4f}<extra></extra>',
+            ),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=p_df['label'],
+                y=p_df['cum_pct'],
+                mode='lines+markers',
+                name='Acumulado %',
+                line=dict(color='#FFA726', width=2),
+                marker=dict(size=6),
+                hovertemplate='<b>%{x}</b><br>Acumulado: %{y:.2f}%<extra></extra>',
+            ),
+            secondary_y=True,
+        )
+
+        fig.update_layout(
+            title_text='Pareto de variables seleccionadas',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#A0AEC0'),
+            margin=dict(l=20, r=20, t=50, b=20),
+            xaxis=dict(tickangle=-35),
+        )
+        fig.update_yaxes(title_text='Valor', secondary_y=False, showgrid=True, gridcolor='#2B303B')
+        fig.update_yaxes(title_text='Acumulado %', secondary_y=True, range=[0, 100], showgrid=False)
+
+        if uirevision_key is not None:
+            fig.update_layout(uirevision=uirevision_key)
         return fig
     
     # --- NON-PIE CHART LOGIC (Line, Bar, Area, Scatter) ---
