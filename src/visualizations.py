@@ -1616,4 +1616,56 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
                 hoverinfo='skip'
             ))
 
+    # === Legend Order: latest value (desc) ===
+    # Keep rendering order untouched; only reorder legend via legendrank.
+    def _last_valid_number(seq):
+        if seq is None:
+            return None
+        try:
+            values = list(seq)
+        except Exception:
+            return None
+
+        for v in reversed(values):
+            try:
+                num = float(v)
+            except Exception:
+                continue
+            if pd.notna(num):
+                return num
+        return None
+
+    legend_rows = []
+    for idx, trace in enumerate(fig.data):
+        if getattr(trace, 'showlegend', True) is False:
+            continue
+
+        t_name = str(getattr(trace, 'name', '') or f'trace_{idx}')
+        t_value = None
+
+        if hasattr(trace, 'y'):
+            t_value = _last_valid_number(trace.y)
+        elif hasattr(trace, 'values'):
+            # Pie fallback
+            t_value = _last_valid_number(trace.values)
+
+        legend_rows.append((idx, t_name, t_value))
+
+    legend_rows_sorted = sorted(
+        legend_rows,
+        key=lambda r: (
+            r[2] is None,
+            -(r[2] if r[2] is not None else 0),
+            r[1].lower(),
+        )
+    )
+
+    for rank, (idx, _, _) in enumerate(legend_rows_sorted, start=1):
+        try:
+            fig.data[idx].legendrank = rank
+        except Exception:
+            pass
+
+    fig.update_layout(legend=dict(traceorder='normal'))
+
     return fig
