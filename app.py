@@ -658,6 +658,19 @@ def main():
                             if proj_df_for_chart is not None and proj_df_for_chart.empty:
                                 proj_df_for_chart = None
 
+                        main_uirevision = _cache_key({
+                            'scope': 'main_chart',
+                            'vars': sorted([str(v) for v in actual_chart_vars]),
+                            'batches': sorted([str(b) for b in filters.get('batches', [])]),
+                            'depts': sorted([str(d) for d in filters.get('depts', [])]),
+                            'units': sorted([str(u) for u in filters.get('units', [])]),
+                            'comparison_mode': comparison_mode,
+                            'x_mode': x_mode,
+                            'unite_vars': bool(unite_vars),
+                            'independent_axes': bool(independent_axes),
+                            'granularity': filters.get('granularity', 'Día'),
+                        })
+
                         fig = create_main_chart(
                             filtered_df, actual_chart_vars, comparison_mode, x_mode, chart_type, 
                             sum_units=filters.get('sum_units', False), 
@@ -672,6 +685,7 @@ def main():
                             active_kpis=filters.get('active_kpis', []),
                             proyecciones_df=proj_df_for_chart,
                             variable_ranges=variable_ranges_main,
+                            uirevision_key=main_uirevision,
                         )
                         
                         st.markdown('<div style="border-radius: 12px; overflow: hidden; border: 1px solid #2B303B;">', unsafe_allow_html=True)
@@ -988,6 +1002,14 @@ def main():
                     )
                     
                     if not med_df.empty:
+                        med_uirevision = _cache_key({
+                            'scope': 'med_chart',
+                            'vars': sorted([str(v) for v in filters.get('mediciones_vars', [])]),
+                            'places': sorted([str(p) for p in filters.get('mediciones_places', [])]),
+                            'unite': bool(med_unir),
+                            'independent_axes': bool(med_axes),
+                        })
+
                         fig_med = create_main_chart(
                             med_df, 
                             filters['mediciones_vars'], 
@@ -1000,6 +1022,7 @@ def main():
                             rename_map=alias_map_med,
                             highlight_points=st.session_state.measured_points if measure_mode else None,
                             variable_ranges=variable_ranges_med,
+                            uirevision_key=med_uirevision,
                         )
                         
                         if measure_mode and med_chart_type != 'Torta':

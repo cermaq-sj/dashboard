@@ -2,7 +2,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: str = 'Overlay', x_axis_mode: str = 'Date', chart_type: str = 'Líneas', hover_mode: str = 'x unified', sum_units: bool = False, avg_units: bool = False, align_first: bool = False, highlight_points: list = None, unite_variables: bool = False, independent_axes: bool = False, rename_map: dict = None, pie_view_mode: str = "parents", kpi_thresholds: dict = None, active_kpis: list = None, proyecciones_df=None, variable_ranges: dict = None):
+def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: str = 'Overlay', x_axis_mode: str = 'Date', chart_type: str = 'Líneas', hover_mode: str = 'x unified', sum_units: bool = False, avg_units: bool = False, align_first: bool = False, highlight_points: list = None, unite_variables: bool = False, independent_axes: bool = False, rename_map: dict = None, pie_view_mode: str = "parents", kpi_thresholds: dict = None, active_kpis: list = None, proyecciones_df=None, variable_ranges: dict = None, uirevision_key: str = None):
     """
     Creates the main Plotly chart.
     
@@ -1667,5 +1667,8 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
             pass
 
     fig.update_layout(legend=dict(traceorder='normal'))
+
+    if uirevision_key is not None:
+        fig.update_layout(uirevision=uirevision_key)
 
     return fig
