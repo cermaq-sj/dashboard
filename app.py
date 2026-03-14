@@ -168,9 +168,6 @@ def _render_quick_cards_main(cards):
     if not visible_cards:
         return
 
-    st.markdown("### Tarjetas rápidas")
-    st.caption("Último valor, mínimo, máximo y promedio del recorrido actualmente mostrado.")
-
     cols_per_row = 3
     for i in range(0, len(visible_cards), cols_per_row):
         row_cards = visible_cards[i:i + cols_per_row]
@@ -200,6 +197,20 @@ def _render_quick_cards_main(cards):
                         cid for cid in st.session_state.quick_cards_visible if cid != card['id']
                     ]
                     st.rerun()
+
+    hidden_count = max(0, len(cards) - len(visible_cards))
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        if st.button(
+            f"🗂 Tarjetas ocultas ({hidden_count})",
+            key="open_cards_view_btn_bottom",
+            use_container_width=True,
+            disabled=(hidden_count == 0),
+        ):
+            show_view_transition()
+            st.session_state.current_view = "Cards"
+            st.rerun()
 
 
 def _render_quick_cards_screen():
@@ -532,7 +543,7 @@ def main():
 
     # --- Header ---
     if st.session_state.current_view == "Main":
-        col_header, col_status, col_btn_cards, col_btn_dash, col_config = st.columns([3, 1, 0.7, 0.6, 0.4])
+        col_header, col_status, col_btn_dash, col_config = st.columns([3, 1, 0.6, 0.4])
         with col_header:
             inject_logo(dashboard_mode=False)
             
@@ -550,13 +561,6 @@ def main():
             else:
                  st.markdown("⚪ <span style='color:#A0AEC0'>Esperando datos</span>", unsafe_allow_html=True)
                  
-        with col_btn_cards:
-            if 'data_loaded' in st.session_state and st.session_state.data_loaded:
-                if st.button("🗂 Tarjetas", key="open_cards_view_btn", help="Ver tarjetas ocultas"):
-                    show_view_transition()
-                    st.session_state.current_view = "Cards"
-                    st.rerun()
-
         with col_btn_dash:
             if 'data_loaded' in st.session_state and st.session_state.data_loaded:
                 if st.button("📋 Dashboard", key="toggle_view_btn", help="Cambiar a la vista del Dashboard"):
