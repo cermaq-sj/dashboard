@@ -1366,18 +1366,44 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
         }
         default_kpi_color = '#EF5350'
 
-        # Resolve dept and date columns from the production df
+        # Resolve dept/date columns from production df
         _dept_col = get_col('departamento') or get_col('depto') or get_col('dept')
         _date_col = get_col('fecha') or get_col('date')
+        _week_col = 'Semana' if 'Semana' in df.columns else None
 
-        # Build dept → (min_date, max_date) lookup from the actual data
-        dept_date_ranges = {}
-        if _dept_col and _date_col:
+        # Build dept -> x-range lookup based on current axis mode.
+        # Weekly mode uses numeric week index, otherwise date range.
+        dept_x_ranges = {}
+        dept_x_ranges_norm = {}
+        global_x_range = None
+
+        if is_weekly and _week_col:
+            all_weeks = pd.to_numeric(df[_week_col], errors='coerce').dropna()
+            if not all_weeks.empty:
+                global_x_range = (float(all_weeks.min()), float(all_weeks.max()))
+        elif _date_col:
+            all_dates = pd.to_datetime(df[_date_col], errors='coerce').dropna()
+            if not all_dates.empty:
+                global_x_range = (all_dates.min(), all_dates.max())
+
+        if _dept_col:
             for dept_name in df[_dept_col].dropna().unique():
+                dept_key = str(dept_name).strip()
+                dept_key_norm = _kpi_norm(dept_key)
                 dept_mask = df[_dept_col] == dept_name
-                dept_dates = pd.to_datetime(df.loc[dept_mask, _date_col], errors='coerce').dropna()
-                if not dept_dates.empty:
-                    dept_date_ranges[str(dept_name).strip()] = (dept_dates.min(), dept_dates.max())
+
+                if is_weekly and _week_col:
+                    dept_weeks = pd.to_numeric(df.loc[dept_mask, _week_col], errors='coerce').dropna()
+                    if not dept_weeks.empty:
+                        dept_range = (float(dept_weeks.min()), float(dept_weeks.max()))
+                        dept_x_ranges[dept_key] = dept_range
+                        dept_x_ranges_norm[dept_key_norm] = dept_range
+                elif _date_col:
+                    dept_dates = pd.to_datetime(df.loc[dept_mask, _date_col], errors='coerce').dropna()
+                    if not dept_dates.empty:
+                        dept_range = (dept_dates.min(), dept_dates.max())
+                        dept_x_ranges[dept_key] = dept_range
+                        dept_x_ranges_norm[dept_key_norm] = dept_range
 
         for kpi_tipo in active_kpis:
             dept_vals = kpi_thresholds.get(kpi_tipo, {})
@@ -1387,14 +1413,19 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
             # Build sorted list of segments by start date
             segments = []
             for dept, threshold_val in dept_vals.items():
-                date_range = dept_date_ranges.get(dept)
-                if not date_range:
+                dept_key = str(dept).strip()
+                x_range = dept_x_ranges.get(dept_key)
+                if not x_range:
+                    x_range = dept_x_ranges_norm.get(_kpi_norm(dept_key))
+                if not x_range:
+                    x_range = global_x_range
+                if not x_range:
                     continue
                 segments.append({
-                    'dept': dept,
+                    'dept': dept_key,
                     'val': threshold_val * 100,
-                    'x0': date_range[0],
-                    'x1': date_range[1],
+                    'x0': x_range[0],
+                    'x1': x_range[1],
                     'color': kpi_colors.get(dept, default_kpi_color),
                 })
 
