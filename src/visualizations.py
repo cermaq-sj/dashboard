@@ -510,10 +510,31 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
     
     # --- NON-PIE CHART LOGIC (Line, Bar, Area, Scatter) ---
     
+    def _safe_vertical_spacing(n_rows: int, preferred: float) -> float:
+        if n_rows <= 1:
+            return 0.0
+        # Plotly constraint: vertical_spacing <= 1 / (rows - 1)
+        max_allowed = (1.0 / (n_rows - 1)) - 1e-3
+        return max(0.0, min(float(preferred), max_allowed))
+
     if med_subplots:
-        fig = make_subplots(rows=len(variables), cols=1, subplot_titles=[_display_name(v) for v in variables], shared_xaxes=True, vertical_spacing=0.08)
+        rows_n = len(variables)
+        fig = make_subplots(
+            rows=rows_n,
+            cols=1,
+            subplot_titles=[_display_name(v) for v in variables],
+            shared_xaxes=True,
+            vertical_spacing=_safe_vertical_spacing(rows_n, 0.08),
+        )
     elif std_var_subplots:
-        fig = make_subplots(rows=len(variables), cols=1, subplot_titles=[_display_name(v) for v in variables], shared_xaxes=True, vertical_spacing=0.06)
+        rows_n = len(variables)
+        fig = make_subplots(
+            rows=rows_n,
+            cols=1,
+            subplot_titles=[_display_name(v) for v in variables],
+            shared_xaxes=True,
+            vertical_spacing=_safe_vertical_spacing(rows_n, 0.06),
+        )
     elif is_subplots:
         fig = make_subplots(rows=1, cols=len(unique_batches), subplot_titles=[str(b) for b in unique_batches])
     else:
