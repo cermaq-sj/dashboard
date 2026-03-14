@@ -439,10 +439,10 @@ def main():
             if not filters:
                 st.info("Selecciona filtros en el panel lateral y presiona 'Listo' para consultar.")
                 return
-            
-            # Inject param_ranges into filters
-            filters['param_ranges'] = get_range_filters('fishtalk_data')
-            filters['param_ranges_med'] = get_range_filters('mediciones_data')
+
+            # Parameter config ranges are visual-only (per variable), not SQL row filters.
+            variable_ranges_main = get_range_filters('fishtalk_data')
+            variable_ranges_med = get_range_filters('mediciones_data')
             alias_map = get_alias_map('fishtalk_data')
             alias_map_med = get_alias_map('mediciones_data')
             
@@ -671,6 +671,7 @@ def main():
                             kpi_thresholds=kpi_thresholds if filters.get('active_kpis') else None,
                             active_kpis=filters.get('active_kpis', []),
                             proyecciones_df=proj_df_for_chart,
+                            variable_ranges=variable_ranges_main,
                         )
                         
                         st.markdown('<div style="border-radius: 12px; overflow: hidden; border: 1px solid #2B303B;">', unsafe_allow_html=True)
@@ -997,7 +998,8 @@ def main():
                             unite_variables=med_unir,
                             independent_axes=med_axes,
                             rename_map=alias_map_med,
-                            highlight_points=st.session_state.measured_points if measure_mode else None
+                            highlight_points=st.session_state.measured_points if measure_mode else None,
+                            variable_ranges=variable_ranges_med,
                         )
                         
                         if measure_mode and med_chart_type != 'Torta':
@@ -1113,6 +1115,34 @@ def main():
                                     if len(step_df) > preview_limit:
                                         st.caption(f"Mostrando primeras {preview_limit} filas (activa 'completas' para ver todo).")
                                     st.dataframe(step_df.head(preview_limit), use_container_width=True)
+
+                            # Visual-only ranges step (per variable), does not remove rows globally.
+                            visual_df = filtered_df.copy()
+                            applied_ranges = []
+                            for var_name, (rmin, rmax) in (variable_ranges_main or {}).items():
+                                if var_name in visual_df.columns:
+                                    num = pd.to_numeric(visual_df[var_name], errors='coerce')
+                                    visual_df[var_name] = visual_df[var_name].where((num >= float(rmin)) & (num <= float(rmax)))
+                                    applied_ranges.append((var_name, rmin, rmax))
+
+                            st.markdown("**Paso 7 - Rango visual por variable (solo gráfico)**")
+                            st.caption(f"Filas: {len(visual_df)}")
+                            if applied_ranges:
+                                st.dataframe(
+                                    pd.DataFrame(applied_ranges, columns=['Variable', 'Min', 'Max']),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                            else:
+                                st.caption("Sin rangos visuales activos.")
+
+                            if full_tables:
+                                st.dataframe(visual_df, use_container_width=True)
+                            else:
+                                preview_limit = 2000
+                                if len(visual_df) > preview_limit:
+                                    st.caption(f"Mostrando primeras {preview_limit} filas (activa 'completas' para ver todo).")
+                                st.dataframe(visual_df.head(preview_limit), use_container_width=True)
     
             else:
                  st.warning("⚠️ No hay datos para la combinación de filtros seleccionada.")

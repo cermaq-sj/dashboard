@@ -1345,18 +1345,9 @@ class DBManager:
             
             common_sql = " AND ".join(common_where) if common_where else "1=1"
             
-            # Parameter Range Filters (from Config tab)
-            param_ranges = filters.get('param_ranges', {})
-            range_where = []
-            for col_name, (rmin, rmax) in param_ranges.items():
-                # Verify column exists in this table
-                if col_name in cols or any(c for c in cols if c.lower() == col_name.lower()):
-                    matched = next((c for c in cols if c == col_name or c.lower() == col_name.lower()), None)
-                    if matched:
-                        range_where.append(f'"{matched}" BETWEEN {rmin} AND {rmax}')
-            
-            if range_where:
-                common_sql = common_sql + " AND " + " AND ".join(range_where)
+            # IMPORTANT:
+            # Parameter ranges from Config are visual-only per variable.
+            # They must NOT filter global rows in SQL, otherwise unrelated variables get truncated.
             
             # --- Branch 1: Main Data Filters ---
             main_where = []
@@ -2023,21 +2014,15 @@ class DBManager:
             ).df()
             steps.append({'name': 'Paso 1 - Filtros comunes (Fecha + Days)', 'df': df_common, 'where': common_sql})
 
-            param_ranges = filters.get('param_ranges', {})
-            range_where = []
-            for col_name, (rmin, rmax) in param_ranges.items():
-                matched = next((c for c in cols if c == col_name or c.lower() == str(col_name).lower()), None)
-                if matched:
-                    range_where.append(f'"{matched}" BETWEEN {rmin} AND {rmax}')
-
             common_plus_sql = common_sql
-            if range_where:
-                common_plus_sql = common_sql + ' AND ' + ' AND '.join(range_where)
-
             df_common_plus = self.con.execute(
                 f"SELECT * FROM {self._quote_ident(table_name)} WHERE {common_plus_sql}"
             ).df()
-            steps.append({'name': 'Paso 2 - + Rangos de Configuración', 'df': df_common_plus, 'where': common_plus_sql})
+            steps.append({
+                'name': 'Paso 2 - Sin rango visual (Config no filtra filas SQL)',
+                'df': df_common_plus,
+                'where': common_plus_sql,
+            })
 
             main_where = []
             if filters.get('batches') and col_lote:

@@ -2,7 +2,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: str = 'Overlay', x_axis_mode: str = 'Date', chart_type: str = 'Líneas', hover_mode: str = 'x unified', sum_units: bool = False, avg_units: bool = False, align_first: bool = False, highlight_points: list = None, unite_variables: bool = False, independent_axes: bool = False, rename_map: dict = None, pie_view_mode: str = "parents", kpi_thresholds: dict = None, active_kpis: list = None, proyecciones_df=None):
+def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: str = 'Overlay', x_axis_mode: str = 'Date', chart_type: str = 'Líneas', hover_mode: str = 'x unified', sum_units: bool = False, avg_units: bool = False, align_first: bool = False, highlight_points: list = None, unite_variables: bool = False, independent_axes: bool = False, rename_map: dict = None, pie_view_mode: str = "parents", kpi_thresholds: dict = None, active_kpis: list = None, proyecciones_df=None, variable_ranges: dict = None):
     """
     Creates the main Plotly chart.
     
@@ -15,8 +15,35 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
 
     # Rename helper
     _rmap = rename_map or {}
+    _vranges = variable_ranges or {}
     def _display_name(col):
         return _rmap.get(col, col)
+
+    def _resolve_var_range(var_name, var_col_name):
+        candidates = [var_name, var_col_name]
+        for c in candidates:
+            if c in _vranges:
+                return _vranges[c]
+        for c in candidates:
+            if c is None:
+                continue
+            c_low = str(c).lower()
+            for k, v in _vranges.items():
+                if str(k).lower() == c_low:
+                    return v
+        return None
+
+    def _apply_visual_range(series, var_name, var_col_name):
+        vr = _resolve_var_range(var_name, var_col_name)
+        if not vr:
+            return series
+        try:
+            rmin, rmax = vr
+            y_num = pd.to_numeric(series, errors='coerce')
+            mask = (y_num >= float(rmin)) & (y_num <= float(rmax))
+            return series.where(mask)
+        except Exception:
+            return series
 
     # Helper to resolve columns using substring matching (handles 'Final Fecha', 'Batch', etc.)
     def get_col(name):
@@ -692,7 +719,7 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
                 
                 trace_params = dict(
                     x=place_data[x_col],
-                    y=place_data[var_col],
+                    y=_apply_visual_range(place_data[var_col], var, var_col),
                     name=trace_name.strip(),
                     customdata=custom_data,
                     hovertemplate=ht,
@@ -1006,7 +1033,7 @@ def create_main_chart(df: pd.DataFrame, variables: list, batch_comparison_mode: 
 
                 trace_params = dict(
                     x=x_data,
-                    y=series_data[var_col],
+                    y=_apply_visual_range(series_data[var_col], var, var_col),
                     name=t_name,
                     customdata=custom_data,
                     hovertemplate=ht,
