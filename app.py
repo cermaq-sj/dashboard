@@ -1081,6 +1081,38 @@ def main():
                     if filters.get('sum_units'):
                          st.info("ℹ️ Modo 'Sumar Unidades' activo: Los datos están agrupados por Lote y Fecha.")
                     st.dataframe(display_df, use_container_width=True)
+
+                with st.expander("Pasos de filtrado", expanded=False):
+                    st.caption("Debug: muestra cómo se van filtrando los datos hasta el resultado final del gráfico.")
+                    full_tables = st.checkbox(
+                        "Mostrar tablas completas (puede ser pesado)",
+                        value=False,
+                        key="debug_filter_full_tables",
+                    )
+                    if st.button("Generar pasos de filtrado", key="gen_filter_steps_btn", use_container_width=True):
+                        with st.spinner("Generando pasos de filtrado..."):
+                            debug_steps = st.session_state.db_manager.get_filter_debug_steps(filters)
+
+                        if not debug_steps:
+                            st.info("No se pudieron generar pasos de filtrado para esta consulta.")
+                        else:
+                            for idx, step in enumerate(debug_steps, start=0):
+                                step_name = step.get('name', f'Paso {idx}')
+                                step_df = step.get('df', pd.DataFrame())
+                                step_where = step.get('where', '')
+
+                                st.markdown(f"**{step_name}**")
+                                st.caption(f"Filas: {len(step_df)}")
+                                if step_where:
+                                    st.code(step_where)
+
+                                if full_tables:
+                                    st.dataframe(step_df, use_container_width=True)
+                                else:
+                                    preview_limit = 2000
+                                    if len(step_df) > preview_limit:
+                                        st.caption(f"Mostrando primeras {preview_limit} filas (activa 'completas' para ver todo).")
+                                    st.dataframe(step_df.head(preview_limit), use_container_width=True)
     
             else:
                  st.warning("⚠️ No hay datos para la combinación de filtros seleccionada.")

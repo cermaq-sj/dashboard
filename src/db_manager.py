@@ -1984,6 +1984,103 @@ class DBManager:
             import traceback; traceback.print_exc()
             return pd.DataFrame()
 
+    def get_filter_debug_steps(self, filters: dict, table_name: str = 'fishtalk_data'):
+        """
+        Returns step-by-step filtering snapshots to debug why rows are included/excluded.
+        Each item: {'name': str, 'df': DataFrame, 'where': str}
+        """
+        steps = []
+        try:
+            if not self._table_exists(table_name):
+                return steps
+
+            cols = [c[0] for c in self.con.execute(f"DESCRIBE {self._quote_ident(table_name)}").fetchall()]
+
+            col_date = self._resolve_col('Fecha', cols)
+            col_lote = self._resolve_col('Lote', cols)
+            col_dept = self._resolve_col('Departamento', cols)
+            col_unit = self._resolve_col('Unidad', cols)
+            col_days = self._resolve_col('Days', cols)
+            col_lugar = self._resolve_col('Lugar de muestreo', cols)
+
+            raw_df = self.con.execute(f"SELECT * FROM {self._quote_ident(table_name)}").df()
+            steps.append({'name': 'Paso 0 - Datos en MotherDuck (tabla base)', 'df': raw_df, 'where': 'SELECT *'})
+
+            common_where = []
+            if filters.get('date_range') and col_date:
+                dr = filters['date_range']
+                if len(dr) == 2:
+                    start_date = pd.to_datetime(dr[0]).strftime('%Y-%m-%d')
+                    end_date = pd.to_datetime(dr[1]).strftime('%Y-%m-%d')
+                    common_where.append(f'"{col_date}" BETWEEN \'{start_date}\' AND \'{end_date}\'')
+
+            if filters.get('days_range') and col_days:
+                common_where.append(f'"{col_days}" BETWEEN {filters["days_range"][0]} AND {filters["days_range"][1]}')
+
+            common_sql = ' AND '.join(common_where) if common_where else '1=1'
+            df_common = self.con.execute(
+                f"SELECT * FROM {self._quote_ident(table_name)} WHERE {common_sql}"
+            ).df()
+            steps.append({'name': 'Paso 1 - Filtros comunes (Fecha + Days)', 'df': df_common, 'where': common_sql})
+
+            param_ranges = filters.get('param_ranges', {})
+            range_where = []
+            for col_name, (rmin, rmax) in param_ranges.items():
+                matched = next((c for c in cols if c == col_name or c.lower() == str(col_name).lower()), None)
+                if matched:
+                    range_where.append(f'"{matched}" BETWEEN {rmin} AND {rmax}')
+
+            common_plus_sql = common_sql
+            if range_where:
+                common_plus_sql = common_sql + ' AND ' + ' AND '.join(range_where)
+
+            df_common_plus = self.con.execute(
+                f"SELECT * FROM {self._quote_ident(table_name)} WHERE {common_plus_sql}"
+            ).df()
+            steps.append({'name': 'Paso 2 - + Rangos de Configuración', 'df': df_common_plus, 'where': common_plus_sql})
+
+            main_where = []
+            if filters.get('batches') and col_lote:
+                batches_str = "', '".join([str(b).replace("'", "''") for b in filters['batches']])
+                main_where.append(f'"{col_lote}" IN (\'{batches_str}\')')
+            if filters.get('depts') and col_dept:
+                depts_str = "', '".join([str(d).replace("'", "''") for d in filters['depts']])
+                main_where.append(f'"{col_dept}" IN (\'{depts_str}\')')
+            if filters.get('units') and col_unit:
+                units_str = "', '".join([str(u).replace("'", "''") for u in filters['units']])
+                main_where.append(f'"{col_unit}" IN (\'{units_str}\')')
+
+            main_sql = ' AND '.join(main_where) if main_where else '1=1'
+            df_main = self.con.execute(
+                f"SELECT * FROM {self._quote_ident(table_name)} WHERE ({common_plus_sql}) AND ({main_sql})"
+            ).df()
+            steps.append({'name': 'Paso 3 - Rama principal (Batch/Dept/Unidad)', 'df': df_main, 'where': f'({common_plus_sql}) AND ({main_sql})'})
+
+            med_sql = '0=1'
+            med_places = filters.get('mediciones_places', [])
+            if med_places and col_lugar:
+                places_str = "', '".join([str(p).replace("'", "''") for p in med_places])
+                med_sql = f"(source_file ILIKE '%Mediciones%' AND \"{col_lugar}\" IN ('{places_str}'))"
+
+            df_med = self.con.execute(
+                f"SELECT * FROM {self._quote_ident(table_name)} WHERE ({common_plus_sql}) AND ({med_sql})"
+            ).df()
+            steps.append({'name': 'Paso 4 - Rama mediciones (Lugar de muestreo)', 'df': df_med, 'where': f'({common_plus_sql}) AND ({med_sql})'})
+
+            combined_where = f"({common_plus_sql}) AND ( ({main_sql}) OR ({med_sql}) )"
+            df_combined = self.con.execute(
+                f"SELECT * FROM {self._quote_ident(table_name)} WHERE {combined_where}"
+            ).df()
+            steps.append({'name': 'Paso 5 - Combinado final (main OR mediciones)', 'df': df_combined, 'where': combined_where})
+
+            final_df = self.get_filtered_data(filters, table_name=table_name)
+            steps.append({'name': 'Paso 6 - Resultado final mostrado (post-cálculos)', 'df': final_df, 'where': 'resultado de get_filtered_data'})
+
+            return steps
+        except Exception as e:
+            print(f"Error building filter debug steps: {e}")
+            return steps
+
     # ====================================================================
     # KPIs y Proyecciones por Batch
     # ====================================================================
