@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import datetime as dt
 import copy
+import hashlib
 from src.filters import render_filters
 from src.data_processing import load_and_clean_data
 from src.db_manager import DBManager
@@ -31,6 +32,212 @@ def safe_plotly_events(fig, key: str):
         override_width="100%",
         key=key,
     )
+
+
+def _resolve_col_name(columns, target: str):
+    target_low = str(target).lower()
+    for c in columns:
+        if str(c).lower() == target_low:
+            return c
+    for c in columns:
+        if target_low in str(c).lower():
+            return c
+    return None
+
+
+def _build_quick_cards(filtered_df: pd.DataFrame, chart_vars: list, alias_map: dict, filters: dict, x_mode: str):
+    if filtered_df is None or filtered_df.empty or not chart_vars:
+        return []
+
+    cols = list(filtered_df.columns)
+    batch_col = _resolve_col_name(cols, 'batch') or _resolve_col_name(cols, 'lote')
+    date_col = _resolve_col_name(cols, 'final fecha') or _resolve_col_name(cols, 'fecha') or _resolve_col_name(cols, 'date')
+
+    x_col = None
+    if filters.get('granularity') == 'Semana' and 'Semana' in filtered_df.columns:
+        x_col = 'Semana'
+    elif x_mode == 'Days':
+        x_col = (
+            _resolve_col_name(cols, 'final days since first input')
+            or _resolve_col_name(cols, 'primer ingreso')
+            or _resolve_col_name(cols, 'days')
+        )
+    if not x_col:
+        x_col = date_col
+
+    if batch_col:
+        batch_values = [b for b in filtered_df[batch_col].dropna().astype(str).unique()]
+        batch_values = sorted(batch_values)
+    else:
+        batch_values = ['Total']
+
+    cards = []
+    for batch_name in batch_values:
+        if batch_col:
+            batch_df = filtered_df[filtered_df[batch_col].astype(str) == str(batch_name)].copy()
+        else:
+            batch_df = filtered_df.copy()
+
+        if batch_df.empty:
+            continue
+
+        for var in chart_vars:
+            var_col = _resolve_col_name(batch_df.columns, var)
+            if not var_col:
+                continue
+
+            values = pd.to_numeric(batch_df[var_col], errors='coerce')
+            valid_mask = values.notna()
+            if not valid_mask.any():
+                continue
+
+            vdf = batch_df.loc[valid_mask].copy()
+            vvals = values.loc[valid_mask]
+
+            v_min = float(vvals.min())
+            v_max = float(vvals.max())
+            v_avg = float(vvals.mean())
+
+            last_val = None
+            last_label = ""
+
+            if date_col and date_col in vdf.columns:
+                dts = pd.to_datetime(vdf[date_col], errors='coerce')
+                if dts.notna().any():
+                    dmax = dts.max()
+                    last_vals = pd.to_numeric(vdf.loc[dts == dmax, var_col], errors='coerce').dropna()
+                    if not last_vals.empty:
+                        last_val = float(last_vals.mean())
+                        last_label = dmax.strftime('%d-%m-%Y')
+
+            if last_val is None and x_col and x_col in vdf.columns:
+                x_num = pd.to_numeric(vdf[x_col], errors='coerce')
+                if x_num.notna().any():
+                    xmax = x_num.max()
+                    last_vals = pd.to_numeric(vdf.loc[x_num == xmax, var_col], errors='coerce').dropna()
+                    if not last_vals.empty:
+                        last_val = float(last_vals.mean())
+                        last_label = f"{x_col}: {xmax:g}"
+
+            if last_val is None:
+                try:
+                    last_val = float(vvals.iloc[-1])
+                except Exception:
+                    last_val = v_avg
+
+            card_id = f"{batch_name}|{var}"
+            cards.append({
+                'id': card_id,
+                'batch': str(batch_name),
+                'var': str(alias_map.get(var, var)),
+                'raw_var': str(var),
+                'last': float(last_val),
+                'last_label': last_label,
+                'min': v_min,
+                'max': v_max,
+                'avg': v_avg,
+            })
+
+    cards.sort(key=lambda c: (c['var'].lower(), c['batch'].lower()))
+    return cards
+
+
+def _card_btn_key(prefix: str, card_id: str):
+    h = hashlib.md5(str(card_id).encode('utf-8')).hexdigest()[:10]
+    return f"{prefix}_{h}"
+
+
+def _render_quick_cards_main(cards):
+    if not cards:
+        return
+
+    all_ids = [c['id'] for c in cards]
+    if 'quick_cards_visible' not in st.session_state:
+        st.session_state.quick_cards_visible = all_ids[:6]
+    else:
+        st.session_state.quick_cards_visible = [i for i in st.session_state.quick_cards_visible if i in all_ids]
+        if not st.session_state.quick_cards_visible:
+            st.session_state.quick_cards_visible = all_ids[:6]
+
+    # enforce max 6 visible in main area (2 rows x 3)
+    st.session_state.quick_cards_visible = st.session_state.quick_cards_visible[:6]
+
+    card_map = {c['id']: c for c in cards}
+    visible_cards = [card_map[i] for i in st.session_state.quick_cards_visible if i in card_map]
+
+    if not visible_cards:
+        return
+
+    st.markdown("### Tarjetas rápidas")
+    st.caption("Último valor, mínimo, máximo y promedio del recorrido actualmente mostrado.")
+
+    cols_per_row = 3
+    for i in range(0, len(visible_cards), cols_per_row):
+        row_cards = visible_cards[i:i + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for idx, card in enumerate(row_cards):
+            with cols[idx]:
+                card_html = f"""
+<div style="background:linear-gradient(160deg, rgba(255,255,255,0.07), rgba(0,0,0,0.30)); border:1px solid rgba(255,255,255,0.14); border-radius:14px; padding:12px 14px; box-shadow:0 8px 24px rgba(0,0,0,0.35);">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+    <div style="font-size:0.74rem; color:#D8DEE9; font-weight:700;">{card['batch']}</div>
+    <div style="font-size:0.68rem; color:rgba(255,255,255,0.58);">{card['var']}</div>
+  </div>
+  <div style="margin-bottom:10px;">
+    <div style="font-size:0.62rem; color:rgba(255,255,255,0.55);">Último valor {('(' + card['last_label'] + ')') if card['last_label'] else ''}</div>
+    <div style="font-size:1.18rem; font-weight:700; color:#FAFAFA;">{card['last']:,.3f}</div>
+  </div>
+  <div style="display:flex; justify-content:space-between; gap:8px; font-size:0.72rem;">
+    <div><span style="color:rgba(255,255,255,0.55);">Mín:</span> <b>{card['min']:,.3f}</b></div>
+    <div><span style="color:rgba(255,255,255,0.55);">Prom:</span> <b>{card['avg']:,.3f}</b></div>
+    <div><span style="color:rgba(255,255,255,0.55);">Máx:</span> <b>{card['max']:,.3f}</b></div>
+  </div>
+</div>
+"""
+                st.markdown(card_html, unsafe_allow_html=True)
+                if st.button("✕", key=_card_btn_key('qc_rm', card['id']), help="Quitar de vista principal"):
+                    st.session_state.quick_cards_visible = [
+                        cid for cid in st.session_state.quick_cards_visible if cid != card['id']
+                    ]
+                    st.rerun()
+
+
+def _render_quick_cards_screen():
+    cards = st.session_state.get('quick_cards_all', [])
+    if not cards:
+        st.info("Aún no hay tarjetas generadas. Vuelve a la vista principal y genera un gráfico.")
+        return
+
+    all_ids = [c['id'] for c in cards]
+    if 'quick_cards_visible' not in st.session_state:
+        st.session_state.quick_cards_visible = all_ids[:6]
+    visible_ids = st.session_state.quick_cards_visible[:6]
+
+    hidden_cards = [c for c in cards if c['id'] not in visible_ids]
+
+    st.markdown("### Tarjetas guardadas")
+    st.caption("Aquí se muestran las tarjetas no visibles en la vista principal. Puedes añadir hasta 6 abajo del gráfico.")
+
+    if not hidden_cards:
+        st.success("No hay tarjetas ocultas. Todas las disponibles ya están visibles (máximo 6).")
+        return
+
+    for card in hidden_cards:
+        c1, c2 = st.columns([8, 1])
+        with c1:
+            st.markdown(
+                f"**{card['batch']} · {card['var']}** — Último: `{card['last']:.3f}` · Min: `{card['min']:.3f}` · Prom: `{card['avg']:.3f}` · Max: `{card['max']:.3f}`"
+            )
+        with c2:
+            if st.button("＋", key=_card_btn_key('qc_add', card['id']), help="Añadir a vista principal"):
+                vis = list(st.session_state.quick_cards_visible)
+                if card['id'] not in vis:
+                    if len(vis) >= 6:
+                        st.warning("Ya hay 6 tarjetas visibles. Quita una (✕) antes de añadir otra.")
+                    else:
+                        vis.append(card['id'])
+                        st.session_state.quick_cards_visible = vis
+                        st.rerun()
 
 
 def _to_jsonable(value):
@@ -325,7 +532,7 @@ def main():
 
     # --- Header ---
     if st.session_state.current_view == "Main":
-        col_header, col_status, col_btn_dash, col_config = st.columns([3, 1, 0.6, 0.4])
+        col_header, col_status, col_btn_cards, col_btn_dash, col_config = st.columns([3, 1, 0.7, 0.6, 0.4])
         with col_header:
             inject_logo(dashboard_mode=False)
             
@@ -343,6 +550,13 @@ def main():
             else:
                  st.markdown("⚪ <span style='color:#A0AEC0'>Esperando datos</span>", unsafe_allow_html=True)
                  
+        with col_btn_cards:
+            if 'data_loaded' in st.session_state and st.session_state.data_loaded:
+                if st.button("🗂 Tarjetas", key="open_cards_view_btn", help="Ver tarjetas ocultas"):
+                    show_view_transition()
+                    st.session_state.current_view = "Cards"
+                    st.rerun()
+
         with col_btn_dash:
             if 'data_loaded' in st.session_state and st.session_state.data_loaded:
                 if st.button("📋 Dashboard", key="toggle_view_btn", help="Cambiar a la vista del Dashboard"):
@@ -365,6 +579,15 @@ def main():
                 show_profile_dialog()
         with col_btn_main:
             if st.button("⬅️", key="back_to_main_btn", help="Volver a los datos y gráficos", use_container_width=True):
+                show_view_transition()
+                st.session_state.current_view = "Main"
+                st.rerun()
+    elif st.session_state.current_view == "Cards":
+        col_header, col_spacer, col_btn_main = st.columns([2, 5, 1])
+        with col_header:
+            inject_logo(dashboard_mode=True)
+        with col_btn_main:
+            if st.button("⬅️", key="back_to_main_from_cards_btn", help="Volver a datos y gráficos", use_container_width=True):
                 show_view_transition()
                 st.session_state.current_view = "Main"
                 st.rerun()
@@ -811,7 +1034,16 @@ def main():
                             else:
                                 st.info(f"Selecciona {2 - len(st.session_state.measured_points)} punto(s) más para medir.")
                         
-                        # Stats cards (Min/Prom/Max) intentionally removed.
+                        # Quick cards per displayed variable + batch (max 6 visible below chart)
+                        quick_cards = _build_quick_cards(
+                            filtered_df=filtered_df,
+                            chart_vars=actual_chart_vars,
+                            alias_map=alias_map,
+                            filters=filters,
+                            x_mode=x_mode,
+                        )
+                        st.session_state.quick_cards_all = quick_cards
+                        _render_quick_cards_main(quick_cards)
                         
                     except Exception as e:
                         st.error(f"Error al generar gráfico: {str(e)}")
@@ -1032,6 +1264,8 @@ def main():
             pass
         else:
             st.warning("Perfil no reconocido.")
+    elif st.session_state.current_view == "Cards":
+        _render_quick_cards_screen()
 
     # Empty state when NO data loaded
     if 'data_loaded' not in st.session_state or not st.session_state.data_loaded:
