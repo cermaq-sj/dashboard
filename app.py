@@ -667,6 +667,7 @@ def main():
                             'comparison_mode': comparison_mode,
                             'x_mode': x_mode,
                             'unite_vars': bool(unite_vars),
+                            'independent_axes': bool(independent_axes),
                             'granularity': filters.get('granularity', 'Día'),
                         })
 
