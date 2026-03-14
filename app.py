@@ -4,6 +4,7 @@ import json
 import datetime as dt
 import copy
 import hashlib
+import plotly.io as pio
 from src.filters import render_filters
 from src.data_processing import load_and_clean_data
 from src.db_manager import DBManager
@@ -274,6 +275,166 @@ def _cache_key(payload) -> str:
     return json.dumps(_to_jsonable(payload), ensure_ascii=True, sort_keys=True, separators=(',', ':'))
 
 
+def _load_dashboard_profiles():
+    profiles = st.session_state.db_manager.list_dashboard_profiles()
+    if not profiles:
+        return [{'profile_key': 'maestro', 'profile_name': 'Maestro'}]
+    return profiles
+
+
+def _apply_fcr_mode_to_chart_vars(chart_vars: list, filtered_df: pd.DataFrame, fcr_view_mode: str):
+    if fcr_view_mode != "Vista individual":
+        return list(chart_vars)
+
+    cols = list(filtered_df.columns)
+
+    def _find_exact(*names):
+        target = {str(n).strip().lower() for n in names}
+        return next((c for c in cols if c.strip().lower() in target), None)
+
+    def _find_contains(*parts):
+        parts_low = [str(p).lower() for p in parts]
+        for c in cols:
+            cl = c.strip().lower()
+            if all(p in cl for p in parts_low):
+                return c
+        return None
+
+    out = list(chart_vars)
+    swaps = [
+        ("FCR Económico Acumulado", lambda: _find_exact('final fcr economico', 'final fcr económico')),
+        ("FCR Biológico Acumulado", lambda: _find_exact('final fcr biologico', 'final fcr biológico')),
+        ("GF3 Acumulado", lambda: _find_exact('final gf3')),
+        ("SGR Acumulado", lambda: _find_exact('final sgr')),
+        ("SFR Acumulado", lambda: _find_exact('final sfr')),
+        ("% Mortalidad Acumulada", lambda: _find_exact('final mortalidad, porcentaje')),
+        ("% Mortalidad diaria", lambda: _find_contains('mortalidad', 'porcentaje', 'per')),
+        ("% Pérdida Acumulada", lambda: _find_contains('perdida', 'numero', 'periodo')),
+        ("% Eliminación Acumulada", lambda: _find_contains('eliminados', 'numero', 'periodo')),
+        ("Pérdida diaria %", lambda: _find_contains('perdida', 'numero', 'periodo')),
+        ("Eliminación diaria %", lambda: _find_contains('eliminados', 'numero', 'periodo')),
+        ("Peso promedio", lambda: _find_exact('final peso prom')),
+    ]
+
+    for source_name, resolver in swaps:
+        if source_name in out:
+            out = [v for v in out if v != source_name]
+            resolved = resolver()
+            if resolved and resolved not in out:
+                out.append(resolved)
+
+    return out
+
+
+def _resolve_actual_chart_vars(chart_vars: list, chart_type: str, pie_view_mode: str):
+    if chart_type != 'Torta':
+        return list(chart_vars)
+
+    actual_chart_vars = list(chart_vars)
+    is_trio = (
+        set(v.strip().lower() for v in actual_chart_vars)
+        == {"% pérdida acumulada", "% eliminación acumulada", "% mortalidad acumulada"}
+    )
+
+    cause_names = [
+        'Embrionaria', 'Deforme Embrionaria', 'Micosis', 'Daño Mecánico Otros',
+        'Desadaptado', 'Deforme', 'Descompuesto', 'Aborto', 'Daño Mecánico',
+        'Sin causa Aparente', 'Maduro', 'Muestras', 'Operculo Corto',
+        'Rezagado', 'Nefrocalcinosis', 'Exofialosis', 'Daño Mecánico por Muestreo',
+    ]
+
+    if is_trio:
+        causes_vars = [f"% Mortalidad {c} Acumulada" for c in cause_names]
+        if pie_view_mode == "parents":
+            actual_chart_vars = ["% Pérdida Acumulada"]
+        elif pie_view_mode == "children":
+            actual_chart_vars = ["% Eliminación Acumulada", "% Mortalidad Acumulada"]
+        elif pie_view_mode == "causes":
+            actual_chart_vars = ["% Eliminación Acumulada"] + causes_vars
+    elif pie_view_mode == "causes":
+        is_daily = any('diaria' in v.lower() for v in actual_chart_vars if 'mortalidad' in v.lower())
+        cause_suffix = 'Diaria' if is_daily else 'Acumulada'
+        causes_vars = [f"% Mortalidad {c} {cause_suffix}" for c in cause_names]
+        actual_chart_vars = [v for v in actual_chart_vars if "mortalidad" not in v.lower() or "causa" in v.lower()]
+        actual_chart_vars = actual_chart_vars + causes_vars
+
+    return actual_chart_vars
+
+
+def _build_snapshot_figure(snapshot_cfg: dict, data_version: str, kpi_thresholds: dict):
+    cfg = copy.deepcopy(snapshot_cfg or {})
+    filters = copy.deepcopy(cfg.get('filters') or {})
+    selected_vars = list(cfg.get('selected_vars') or filters.get('variables') or [])
+
+    if not filters:
+        return None, "No hay filtros guardados para este gráfico."
+    if not selected_vars:
+        return None, "No hay variables guardadas para este gráfico."
+
+    filtered_df = _cached_filtered_data(
+        st.session_state.db_manager,
+        data_version,
+        _cache_key(filters),
+    )
+    if filtered_df is None or filtered_df.empty:
+        return None, "No hay datos para la configuración guardada."
+
+    variable_ranges_main = get_range_filters('fishtalk_data')
+    alias_map = get_alias_map('fishtalk_data')
+
+    chart_type = cfg.get('chart_type', 'Líneas')
+    fcr_mode = cfg.get('fcr_view_mode', 'Vista general')
+    pie_view_mode = cfg.get('pie_view_mode', 'parents')
+    overlay_on = bool(cfg.get('overlay_on', False))
+    unite_vars = bool(cfg.get('unite_vars', False))
+    align_first = bool(cfg.get('align_first', False))
+
+    chart_vars = _apply_fcr_mode_to_chart_vars(selected_vars, filtered_df, fcr_mode)
+    actual_chart_vars = _resolve_actual_chart_vars(chart_vars, chart_type, pie_view_mode)
+    if not actual_chart_vars:
+        return None, "No hay variables válidas para construir el gráfico."
+
+    selected_proj_vars = cfg.get('proyecciones_vars')
+    if selected_proj_vars is None:
+        selected_proj_vars = filters.get('proyecciones_vars', [])
+
+    proj_df_for_chart = None
+    if selected_proj_vars:
+        proj_df_for_chart = _cached_proyecciones_data(
+            st.session_state.db_manager,
+            data_version,
+            _cache_key({
+                'batches': filters.get('batches', []),
+                'variables': selected_proj_vars,
+                'date_range': filters.get('date_range'),
+            }),
+        )
+        if proj_df_for_chart is not None and proj_df_for_chart.empty:
+            proj_df_for_chart = None
+
+    fig = create_main_chart(
+        filtered_df,
+        actual_chart_vars,
+        batch_comparison_mode='Overlay',
+        x_axis_mode='Days' if overlay_on else 'Date',
+        chart_type=chart_type,
+        hover_mode='x unified',
+        sum_units=filters.get('sum_units', False),
+        avg_units=filters.get('avg_units', False),
+        align_first=align_first,
+        highlight_points=None,
+        unite_variables=unite_vars,
+        rename_map=alias_map,
+        pie_view_mode=pie_view_mode,
+        kpi_thresholds=kpi_thresholds if filters.get('active_kpis') else None,
+        active_kpis=filters.get('active_kpis', []),
+        proyecciones_df=proj_df_for_chart,
+        variable_ranges=variable_ranges_main,
+        uirevision_key=None,
+    )
+    return fig, None
+
+
 @st.cache_data(ttl=600, max_entries=64, show_spinner=False)
 def _cached_mediciones_metadata(_db_manager, data_version: str):
     return _db_manager.get_mediciones_metadata()
@@ -367,16 +528,240 @@ def show_add_cards_dialog(hidden_cards):
 @st.dialog("👤 Seleccionar Perfil", width="small")
 def show_profile_dialog():
     st.write("Selecciona el perfil de Dashboard que deseas visualizar:")
-    
-    # Available profiles
-    profiles = {"maestro": "Maestro"}
-    
-    for key, label in profiles.items():
-        # Highlight active profile
-        btn_type = "primary" if st.session_state.get('current_profile') == key else "secondary"
-        if st.button(label, key=f"btn_profile_{key}", type=btn_type, use_container_width=True):
-            st.session_state.current_profile = key
+
+    profiles = _load_dashboard_profiles()
+    current_profile = st.session_state.get('current_profile', 'maestro')
+    available_keys = [p['profile_key'] for p in profiles]
+    if current_profile not in available_keys and available_keys:
+        current_profile = available_keys[0]
+        st.session_state.current_profile = current_profile
+
+    for item in profiles:
+        p_key = item.get('profile_key', 'maestro')
+        p_name = item.get('profile_name', p_key)
+        btn_type = "primary" if current_profile == p_key else "secondary"
+        if st.button(p_name, key=f"btn_profile_{p_key}", type=btn_type, use_container_width=True):
+            st.session_state.current_profile = p_key
             st.rerun()
+
+
+@st.dialog("➕ Guardar gráfico en Dashboard", width="small")
+def show_save_chart_dialog():
+    pending = st.session_state.get('pending_dashboard_snapshot')
+    if not pending:
+        st.info("No hay gráfico listo para guardar.")
+        return
+
+    profiles = _load_dashboard_profiles()
+    profile_keys = [p['profile_key'] for p in profiles]
+    profile_name_map = {p['profile_key']: p.get('profile_name', p['profile_key']) for p in profiles}
+
+    current_profile = st.session_state.get('current_profile', 'maestro')
+    if current_profile not in profile_keys and profile_keys:
+        current_profile = profile_keys[0]
+
+    selected_profile = st.selectbox(
+        "Perfil",
+        options=profile_keys,
+        index=profile_keys.index(current_profile) if current_profile in profile_keys else 0,
+        format_func=lambda k: profile_name_map.get(k, k),
+        key="save_dash_profile_select",
+    )
+    new_profile_name = st.text_input("O crear perfil nuevo", placeholder="Ej: Producción marzo", key="save_dash_new_profile")
+    chart_title = st.text_input(
+        "Nombre del gráfico",
+        value=str(pending.get('chart_title') or 'Gráfico guardado'),
+        key="save_dash_chart_title",
+    )
+
+    col_ok, col_cancel = st.columns(2)
+    with col_ok:
+        if st.button("Guardar", type="primary", use_container_width=True, key="save_dash_chart_confirm"):
+            target_profile = selected_profile
+            if new_profile_name.strip():
+                created = st.session_state.db_manager.create_dashboard_profile(new_profile_name.strip())
+                if not created:
+                    st.error("No se pudo crear el perfil nuevo.")
+                    return
+                target_profile = created['profile_key']
+
+            chart_id = st.session_state.db_manager.save_dashboard_chart_snapshot(
+                profile_key=target_profile,
+                chart_title=chart_title.strip() or "Gráfico guardado",
+                figure_json=str(pending.get('figure_json') or ''),
+                config_payload=_to_jsonable(pending.get('config') or {}),
+            )
+            if chart_id:
+                st.session_state.current_profile = target_profile
+                st.session_state.pending_dashboard_snapshot = None
+                st.success("Gráfico guardado en Dashboard.")
+                st.rerun()
+            else:
+                st.error("No se pudo guardar el gráfico en la base de datos.")
+    with col_cancel:
+        if st.button("Cancelar", use_container_width=True, key="save_dash_chart_cancel"):
+            st.session_state.pending_dashboard_snapshot = None
+            st.rerun()
+
+
+@st.dialog("⋯ Configurar gráfico guardado", width="small")
+def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
+    chart = st.session_state.db_manager.get_dashboard_chart(chart_id)
+    if not chart:
+        st.error("No se encontró el gráfico seleccionado.")
+        return
+
+    cfg = copy.deepcopy(chart.get('config') or {})
+    filters = copy.deepcopy(cfg.get('filters') or {})
+
+    st.caption(chart.get('chart_title') or "Gráfico guardado")
+
+    available_batches = [str(v) for v in st.session_state.db_manager.get_unique_values("Lote")]
+    saved_batches = [str(v) for v in filters.get('batches', [])]
+    default_batches = [b for b in saved_batches if b in available_batches]
+
+    batches = st.multiselect(
+        "Batch",
+        options=available_batches,
+        default=default_batches,
+        key=f"dash_cfg_batches_{chart_id}",
+    )
+
+    min_days, max_days = st.session_state.db_manager.get_min_max("Days")
+    days_range = filters.get('days_range', [])
+    has_days = min_days is not None and max_days is not None
+    if has_days:
+        min_d = int(min_days)
+        max_d = int(max_days)
+        default_days = (min_d, max_d)
+        if isinstance(days_range, (list, tuple)) and len(days_range) == 2:
+            try:
+                d0 = int(days_range[0])
+                d1 = int(days_range[1])
+                d0 = max(min_d, min(max_d, d0))
+                d1 = max(min_d, min(max_d, d1))
+                if d0 > d1:
+                    d0, d1 = d1, d0
+                default_days = (d0, d1)
+            except Exception:
+                pass
+
+        days_selected = st.slider(
+            "Rango días de cultivo",
+            min_value=min_d,
+            max_value=max_d,
+            value=default_days,
+            key=f"dash_cfg_days_{chart_id}",
+        )
+    else:
+        days_selected = days_range
+
+    granularity_saved = str(filters.get('granularity', 'Día'))
+    granularity = st.radio(
+        "Agrupación temporal",
+        options=["Día", "Semana"],
+        index=1 if granularity_saved == "Semana" else 0,
+        horizontal=True,
+        key=f"dash_cfg_gran_{chart_id}",
+    )
+
+    overlay_on = st.checkbox(
+        "Superponer",
+        value=bool(cfg.get('overlay_on', False)),
+        key=f"dash_cfg_overlay_{chart_id}",
+    )
+    unite_vars = st.checkbox(
+        "Unir variables",
+        value=bool(cfg.get('unite_vars', False)),
+        key=f"dash_cfg_unite_{chart_id}",
+    )
+    align_first = st.checkbox(
+        "Desde 1er reg.",
+        value=bool(cfg.get('align_first', False)),
+        key=f"dash_cfg_align_{chart_id}",
+    )
+
+    kpi_thresholds = get_kpi_config_thresholds() or _cached_kpi_thresholds(st.session_state.db_manager, data_version)
+
+    col_ok, col_cancel = st.columns(2)
+    with col_ok:
+        if st.button("OK", type="primary", use_container_width=True, key=f"dash_cfg_ok_{chart_id}"):
+            new_cfg = copy.deepcopy(cfg)
+            new_filters = copy.deepcopy(filters)
+            new_filters['batches'] = batches
+            new_filters['granularity'] = granularity
+            if has_days and isinstance(days_selected, (list, tuple)) and len(days_selected) == 2:
+                new_filters['days_range'] = [int(days_selected[0]), int(days_selected[1])]
+
+            new_cfg['filters'] = new_filters
+            new_cfg['overlay_on'] = bool(overlay_on)
+            new_cfg['unite_vars'] = bool(unite_vars)
+            new_cfg['align_first'] = bool(align_first)
+
+            fig, err = _build_snapshot_figure(new_cfg, data_version, kpi_thresholds)
+            if err:
+                st.error(err)
+                return
+
+            ok = st.session_state.db_manager.update_dashboard_chart_snapshot(
+                chart_id=chart_id,
+                profile_key=chart.get('profile_key', st.session_state.get('current_profile', 'maestro')),
+                chart_title=chart.get('chart_title') or 'Gráfico guardado',
+                figure_json=fig.to_json(),
+                config_payload=_to_jsonable(new_cfg),
+            )
+            if ok:
+                st.success("Gráfico actualizado.")
+                st.rerun()
+            else:
+                st.error("No se pudo actualizar el gráfico.")
+    with col_cancel:
+        if st.button("Cancelar", use_container_width=True, key=f"dash_cfg_cancel_{chart_id}"):
+            st.rerun()
+
+
+def _render_dashboard_content(data_version: str):
+    profiles = _load_dashboard_profiles()
+    name_map = {p['profile_key']: p.get('profile_name', p['profile_key']) for p in profiles}
+    current_profile = st.session_state.get('current_profile', 'maestro')
+
+    if current_profile not in name_map:
+        current_profile = profiles[0]['profile_key'] if profiles else 'maestro'
+        st.session_state.current_profile = current_profile
+
+    st.caption(f"Perfil activo: {name_map.get(current_profile, current_profile)}")
+
+    charts = st.session_state.db_manager.list_dashboard_profile_charts(current_profile)
+    if not charts:
+        st.info("Este perfil no tiene gráficos guardados aún. Ve a la vista principal y usa 'Guardar gráfico en Dashboard'.")
+        return
+
+    for idx, item in enumerate(charts, start=1):
+        chart_id = item.get('chart_id', '')
+        title = item.get('chart_title') or f"Gráfico {idx}"
+        updated_at = str(item.get('updated_at') or '')
+
+        with st.container(border=True):
+            head_col, menu_col = st.columns([10, 1])
+            with head_col:
+                st.markdown(f"**{title}**")
+                if updated_at:
+                    st.caption(f"Actualizado: {updated_at[:19]}")
+            with menu_col:
+                if st.button("⋯", key=f"dash_menu_{chart_id}", help="Editar configuración"):
+                    show_dashboard_chart_settings_dialog(chart_id, data_version)
+
+            fig_json = item.get('figure_json') or ''
+            if not fig_json:
+                st.warning("Este gráfico no tiene snapshot válido.")
+                continue
+
+            try:
+                fig = pio.from_json(fig_json)
+                chart_key = f"dash_chart_{_cache_key({'id': chart_id, 'u': updated_at})}"
+                st.plotly_chart(fig, use_container_width=True, key=chart_key)
+            except Exception as e:
+                st.error(f"No se pudo renderizar el snapshot: {e}")
 
 
 def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
@@ -690,6 +1075,7 @@ def main():
                 x_mode = 'Date'
                 unite_vars = False
                 align_first = False
+                overlay_on = False
                 
                 # Initialize Session State for Measurement
                 if 'measured_points' not in st.session_state:
@@ -1048,6 +1434,30 @@ def main():
                         )
                         st.session_state.quick_cards_all = quick_cards
                         _render_quick_cards_main(quick_cards)
+
+                        title_vars = [str(alias_map.get(v, v)) for v in actual_chart_vars[:3]]
+                        title_suffix = "..." if len(actual_chart_vars) > 3 else ""
+                        chart_title = f"{chart_type} · {', '.join(title_vars)}{title_suffix}" if title_vars else f"{chart_type}"
+
+                        if st.button("➕ Guardar gráfico en Dashboard", key="save_chart_snapshot_btn", use_container_width=True):
+                            st.session_state.pending_dashboard_snapshot = {
+                                'chart_title': chart_title,
+                                'figure_json': fig.to_json(),
+                                'config': {
+                                    'filters': copy.deepcopy(filters),
+                                    'selected_vars': list(selected_vars),
+                                    'chart_vars': list(chart_vars),
+                                    'actual_chart_vars': list(actual_chart_vars),
+                                    'chart_type': chart_type,
+                                    'overlay_on': bool(overlay_on),
+                                    'unite_vars': bool(unite_vars),
+                                    'align_first': bool(align_first),
+                                    'fcr_view_mode': st.session_state.get('fcr_view_mode', 'Vista general'),
+                                    'pie_view_mode': st.session_state.get('pie_view_mode', 'parents'),
+                                    'proyecciones_vars': list(filters.get('proyecciones_vars', [])),
+                                },
+                            }
+                            show_save_chart_dialog()
                         
                     except Exception as e:
                         st.error(f"Error al generar gráfico: {str(e)}")
@@ -1201,13 +1611,7 @@ def main():
                  st.warning("⚠️ No hay datos para la combinación de filtros seleccionada.")
                  
     elif st.session_state.current_view == "Dashboard":
-        # Dashboard Content based on Profile
-        profile = st.session_state.get('current_profile', 'maestro')
-        
-        if profile == "maestro":
-            pass
-        else:
-            st.warning("Perfil no reconocido.")
+        _render_dashboard_content(data_version)
     elif st.session_state.current_view == "Cards":
         _render_quick_cards_screen()
 

@@ -2,6 +2,7 @@ import os
 import re
 import unicodedata
 import json
+import uuid
 from collections.abc import Mapping
 from urllib.parse import quote
 
@@ -264,6 +265,219 @@ class DBManager:
             return True
         except Exception as e:
             print(f"Error saving app setting '{config_key}': {e}")
+            return False
+
+    def _ensure_dashboard_profiles_tables(self):
+        self.con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_profiles (
+                profile_key VARCHAR,
+                profile_name VARCHAR,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+        self.con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_profile_charts (
+                chart_id VARCHAR,
+                profile_key VARCHAR,
+                chart_title VARCHAR,
+                figure_json VARCHAR,
+                config_json VARCHAR,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+        row = self.con.execute(
+            "SELECT COUNT(*) FROM dashboard_profiles WHERE profile_key = 'maestro'"
+        ).fetchone()
+        if not row or int(row[0]) == 0:
+            self.con.execute(
+                "INSERT INTO dashboard_profiles (profile_key, profile_name, created_at, updated_at) VALUES ('maestro', 'Maestro', NOW(), NOW())"
+            )
+
+    def _slugify_profile_name(self, value: str) -> str:
+        raw = unicodedata.normalize('NFKD', str(value or '').strip())
+        clean = ''.join(c for c in raw if not unicodedata.combining(c))
+        clean = re.sub(r'[^a-zA-Z0-9]+', '-', clean).strip('-').lower()
+        return clean or 'perfil'
+
+    def list_dashboard_profiles(self) -> list:
+        try:
+            self._ensure_dashboard_profiles_tables()
+            rows = self.con.execute(
+                """
+                SELECT profile_key, profile_name, created_at, updated_at
+                FROM dashboard_profiles
+                ORDER BY CASE WHEN profile_key = 'maestro' THEN 0 ELSE 1 END, profile_name
+                """
+            ).fetchall()
+            return [
+                {
+                    'profile_key': str(r[0]),
+                    'profile_name': str(r[1]),
+                    'created_at': r[2],
+                    'updated_at': r[3],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            print(f"Error listing dashboard profiles: {e}")
+            return [{'profile_key': 'maestro', 'profile_name': 'Maestro'}]
+
+    def create_dashboard_profile(self, profile_name: str):
+        try:
+            self._ensure_dashboard_profiles_tables()
+            name = str(profile_name or '').strip() or 'Nuevo perfil'
+            base_key = self._slugify_profile_name(name)
+            candidate = base_key
+            suffix = 1
+
+            while True:
+                row = self.con.execute(
+                    "SELECT COUNT(*) FROM dashboard_profiles WHERE profile_key = ?",
+                    [candidate],
+                ).fetchone()
+                if not row or int(row[0]) == 0:
+                    break
+                suffix += 1
+                candidate = f"{base_key}-{suffix}"
+
+            self.con.execute(
+                """
+                INSERT INTO dashboard_profiles (profile_key, profile_name, created_at, updated_at)
+                VALUES (?, ?, NOW(), NOW())
+                """,
+                [candidate, name],
+            )
+            return {'profile_key': candidate, 'profile_name': name}
+        except Exception as e:
+            print(f"Error creating dashboard profile: {e}")
+            return None
+
+    def save_dashboard_chart_snapshot(self, profile_key: str, chart_title: str, figure_json: str, config_payload: dict):
+        try:
+            self._ensure_dashboard_profiles_tables()
+            row = self.con.execute(
+                "SELECT COUNT(*) FROM dashboard_profiles WHERE profile_key = ?",
+                [profile_key],
+            ).fetchone()
+            if not row or int(row[0]) == 0:
+                self.con.execute(
+                    """
+                    INSERT INTO dashboard_profiles (profile_key, profile_name, created_at, updated_at)
+                    VALUES (?, ?, NOW(), NOW())
+                    """,
+                    [profile_key, str(profile_key).strip() or 'Perfil'],
+                )
+
+            chart_id = uuid.uuid4().hex
+            payload_json = json.dumps(config_payload or {}, ensure_ascii=False)
+            self.con.execute(
+                """
+                INSERT INTO dashboard_profile_charts
+                (chart_id, profile_key, chart_title, figure_json, config_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+                """,
+                [chart_id, profile_key, str(chart_title or '').strip(), str(figure_json or ''), payload_json],
+            )
+            self.con.execute(
+                "UPDATE dashboard_profiles SET updated_at = NOW() WHERE profile_key = ?",
+                [profile_key],
+            )
+            return chart_id
+        except Exception as e:
+            print(f"Error saving dashboard chart snapshot: {e}")
+            return None
+
+    def list_dashboard_profile_charts(self, profile_key: str) -> list:
+        try:
+            self._ensure_dashboard_profiles_tables()
+            rows = self.con.execute(
+                """
+                SELECT chart_id, profile_key, chart_title, figure_json, config_json, created_at, updated_at
+                FROM dashboard_profile_charts
+                WHERE profile_key = ?
+                ORDER BY updated_at DESC, created_at DESC
+                """,
+                [profile_key],
+            ).fetchall()
+
+            out = []
+            for chart_id, pkey, title, fig_json, cfg_json, created_at, updated_at in rows:
+                try:
+                    config_payload = json.loads(cfg_json) if cfg_json else {}
+                except Exception:
+                    config_payload = {}
+                out.append({
+                    'chart_id': str(chart_id),
+                    'profile_key': str(pkey),
+                    'chart_title': str(title or ''),
+                    'figure_json': str(fig_json or ''),
+                    'config': config_payload,
+                    'created_at': created_at,
+                    'updated_at': updated_at,
+                })
+            return out
+        except Exception as e:
+            print(f"Error listing dashboard profile charts: {e}")
+            return []
+
+    def get_dashboard_chart(self, chart_id: str):
+        try:
+            self._ensure_dashboard_profiles_tables()
+            row = self.con.execute(
+                """
+                SELECT chart_id, profile_key, chart_title, figure_json, config_json, created_at, updated_at
+                FROM dashboard_profile_charts
+                WHERE chart_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                [chart_id],
+            ).fetchone()
+            if not row:
+                return None
+            cfg_json = row[4]
+            try:
+                cfg = json.loads(cfg_json) if cfg_json else {}
+            except Exception:
+                cfg = {}
+            return {
+                'chart_id': str(row[0]),
+                'profile_key': str(row[1]),
+                'chart_title': str(row[2] or ''),
+                'figure_json': str(row[3] or ''),
+                'config': cfg,
+                'created_at': row[5],
+                'updated_at': row[6],
+            }
+        except Exception as e:
+            print(f"Error fetching dashboard chart: {e}")
+            return None
+
+    def update_dashboard_chart_snapshot(self, chart_id: str, profile_key: str, chart_title: str, figure_json: str, config_payload: dict) -> bool:
+        try:
+            self._ensure_dashboard_profiles_tables()
+            payload_json = json.dumps(config_payload or {}, ensure_ascii=False)
+            self.con.execute(
+                """
+                UPDATE dashboard_profile_charts
+                SET profile_key = ?, chart_title = ?, figure_json = ?, config_json = ?, updated_at = NOW()
+                WHERE chart_id = ?
+                """,
+                [profile_key, str(chart_title or '').strip(), str(figure_json or ''), payload_json, chart_id],
+            )
+            self.con.execute(
+                "UPDATE dashboard_profiles SET updated_at = NOW() WHERE profile_key = ?",
+                [profile_key],
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating dashboard chart snapshot: {e}")
             return False
 
     def _version_tables(self):
