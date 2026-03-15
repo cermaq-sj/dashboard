@@ -480,6 +480,23 @@ class DBManager:
             print(f"Error updating dashboard chart snapshot: {e}")
             return False
 
+    def update_dashboard_chart_config(self, chart_id: str, config_payload: dict) -> bool:
+        try:
+            self._ensure_dashboard_profiles_tables()
+            payload_json = json.dumps(config_payload or {}, ensure_ascii=False)
+            self.con.execute(
+                """
+                UPDATE dashboard_profile_charts
+                SET config_json = ?, updated_at = NOW()
+                WHERE chart_id = ?
+                """,
+                [payload_json, chart_id],
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating dashboard chart config: {e}")
+            return False
+
     def _version_tables(self):
         return ['fishtalk_data', 'mediciones_data', 'kpi_thresholds', 'proyecciones_data']
 

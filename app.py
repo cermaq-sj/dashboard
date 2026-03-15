@@ -21,6 +21,14 @@ except Exception:
     _plotly_events = None
     PLOTLY_EVENTS_AVAILABLE = False
 
+try:
+    import importlib
+    _sort_items = importlib.import_module('streamlit_sortables').sort_items
+    SORTABLES_AVAILABLE = True
+except Exception:
+    _sort_items = None
+    SORTABLES_AVAILABLE = False
+
 
 def safe_plotly_events(fig, key: str):
     if not PLOTLY_EVENTS_AVAILABLE or _plotly_events is None:
@@ -435,6 +443,76 @@ def _build_snapshot_figure(snapshot_cfg: dict, data_version: str, kpi_thresholds
     return fig, None
 
 
+SIZE_TO_SPAN = {
+    'small': 3,
+    'medium': 6,
+    'large': 9,
+    'full': 12,
+}
+
+
+def _normalize_tile_size(value: str) -> str:
+    v = str(value or '').strip().lower()
+    return v if v in SIZE_TO_SPAN else 'large'
+
+
+def _tile_span(item: dict) -> int:
+    cfg = item.get('config') or {}
+    layout = cfg.get('layout') or {}
+    return int(SIZE_TO_SPAN.get(_normalize_tile_size(layout.get('size')), 9))
+
+
+def _tile_order(item: dict, fallback: int) -> int:
+    cfg = item.get('config') or {}
+    layout = cfg.get('layout') or {}
+    try:
+        return int(layout.get('order'))
+    except Exception:
+        return fallback
+
+
+def _sorted_dashboard_tiles(items: list) -> list:
+    prepared = []
+    for idx, item in enumerate(items):
+        cpy = copy.deepcopy(item)
+        cfg = cpy.get('config') or {}
+        cpy['config'] = cfg
+        layout = cfg.get('layout') or {}
+        cfg['layout'] = layout
+        layout.setdefault('size', 'large')
+        layout.setdefault('order', idx)
+        prepared.append(cpy)
+    prepared.sort(key=lambda it: _tile_order(it, 999999))
+    return prepared
+
+
+def _pack_tiles_rows(items: list) -> list:
+    rows = []
+    cur = []
+    used = 0
+    for item in items:
+        span = max(1, min(12, _tile_span(item)))
+        if cur and (used + span > 12):
+            rows.append(cur)
+            cur = []
+            used = 0
+        cur.append((item, span))
+        used += span
+    if cur:
+        rows.append(cur)
+    return rows
+
+
+def _next_profile_order(profile_key: str) -> int:
+    items = st.session_state.db_manager.list_dashboard_profile_charts(profile_key)
+    if not items:
+        return 0
+    max_order = -1
+    for idx, item in enumerate(items):
+        max_order = max(max_order, _tile_order(item, idx))
+    return int(max_order + 1)
+
+
 @st.cache_data(ttl=600, max_entries=64, show_spinner=False)
 def _cached_mediciones_metadata(_db_manager, data_version: str):
     return _db_manager.get_mediciones_metadata()
@@ -585,11 +663,20 @@ def show_save_chart_dialog():
                     return
                 target_profile = created['profile_key']
 
+            next_order = _next_profile_order(target_profile)
+
             chart_id = st.session_state.db_manager.save_dashboard_chart_snapshot(
                 profile_key=target_profile,
                 chart_title=chart_title.strip() or "Gráfico guardado",
                 figure_json=str(pending.get('figure_json') or ''),
-                config_payload=_to_jsonable(pending.get('config') or {}),
+                config_payload=_to_jsonable({
+                    **(pending.get('config') or {}),
+                    'tile_type': (pending.get('config') or {}).get('tile_type', 'chart'),
+                    'layout': {
+                        'size': _normalize_tile_size(((pending.get('config') or {}).get('layout') or {}).get('size', 'large')),
+                        'order': next_order,
+                    },
+                }),
             )
             if chart_id:
                 st.session_state.current_profile = target_profile
@@ -612,7 +699,47 @@ def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
         return
 
     cfg = copy.deepcopy(chart.get('config') or {})
+    layout = copy.deepcopy(cfg.get('layout') or {})
     filters = copy.deepcopy(cfg.get('filters') or {})
+    tile_type = str(cfg.get('tile_type') or 'chart')
+
+    size_options = ['small', 'medium', 'large', 'full']
+    size_labels = {
+        'small': 'Pequeño (1/4)',
+        'medium': 'Mediano (1/2)',
+        'large': 'Grande (3/4)',
+        'full': 'Pantalla (1/1)',
+    }
+    size_value = _normalize_tile_size(layout.get('size', 'large'))
+    size_selected = st.selectbox(
+        "Tamaño de tarjeta",
+        options=size_options,
+        index=size_options.index(size_value),
+        format_func=lambda s: size_labels.get(s, s),
+        key=f"dash_cfg_size_{chart_id}",
+    )
+
+    if tile_type == 'quick_card':
+        st.caption("Tarjeta rápida")
+        col_ok, col_cancel = st.columns(2)
+        with col_ok:
+            if st.button("OK", type="primary", use_container_width=True, key=f"dash_cfg_ok_qc_{chart_id}"):
+                new_cfg = copy.deepcopy(cfg)
+                new_cfg['tile_type'] = 'quick_card'
+                new_cfg['layout'] = {
+                    'size': _normalize_tile_size(size_selected),
+                    'order': int(layout.get('order', 0)),
+                }
+                ok = st.session_state.db_manager.update_dashboard_chart_config(chart_id, _to_jsonable(new_cfg))
+                if ok:
+                    st.success("Tarjeta actualizada.")
+                    st.rerun()
+                else:
+                    st.error("No se pudo actualizar la tarjeta.")
+        with col_cancel:
+            if st.button("Cancelar", use_container_width=True, key=f"dash_cfg_cancel_qc_{chart_id}"):
+                st.rerun()
+        return
 
     st.caption(chart.get('chart_title') or "Gráfico guardado")
 
@@ -694,9 +821,14 @@ def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
                 new_filters['days_range'] = [int(days_selected[0]), int(days_selected[1])]
 
             new_cfg['filters'] = new_filters
+            new_cfg['tile_type'] = 'chart'
             new_cfg['overlay_on'] = bool(overlay_on)
             new_cfg['unite_vars'] = bool(unite_vars)
             new_cfg['align_first'] = bool(align_first)
+            new_cfg['layout'] = {
+                'size': _normalize_tile_size(size_selected),
+                'order': int(layout.get('order', 0)),
+            }
 
             fig, err = _build_snapshot_figure(new_cfg, data_version, kpi_thresholds)
             if err:
@@ -720,6 +852,146 @@ def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
             st.rerun()
 
 
+@st.dialog("➕ Agregar tarjetas rápidas al Dashboard", width="small")
+def show_save_quick_cards_dialog():
+    cards = st.session_state.get('pending_dashboard_quick_cards') or []
+    if not cards:
+        st.info("No hay tarjetas rápidas disponibles para agregar.")
+        return
+
+    profiles = _load_dashboard_profiles()
+    profile_keys = [p['profile_key'] for p in profiles]
+    profile_name_map = {p['profile_key']: p.get('profile_name', p['profile_key']) for p in profiles}
+
+    current_profile = st.session_state.get('current_profile', 'maestro')
+    if current_profile not in profile_keys and profile_keys:
+        current_profile = profile_keys[0]
+
+    selected_profile = st.selectbox(
+        "Perfil",
+        options=profile_keys,
+        index=profile_keys.index(current_profile) if current_profile in profile_keys else 0,
+        format_func=lambda k: profile_name_map.get(k, k),
+        key="save_dash_qc_profile_select",
+    )
+    new_profile_name = st.text_input("O crear perfil nuevo", placeholder="Ej: Operación noche", key="save_dash_qc_new_profile")
+
+    options = [c.get('id') for c in cards if c.get('id')]
+    label_map = {
+        c.get('id'): f"{c.get('batch', 'Total')} · {c.get('var', 'Variable')}"
+        for c in cards if c.get('id')
+    }
+    default_selected = options[: min(6, len(options))]
+    selected_cards = st.multiselect(
+        "Tarjetas a agregar",
+        options=options,
+        default=default_selected,
+        format_func=lambda cid: label_map.get(cid, cid),
+        key="save_dash_qc_selected",
+    )
+
+    size_options = ['small', 'medium', 'large', 'full']
+    size_labels = {
+        'small': 'Pequeño (1/4)',
+        'medium': 'Mediano (1/2)',
+        'large': 'Grande (3/4)',
+        'full': 'Pantalla (1/1)',
+    }
+    qc_size = st.selectbox(
+        "Tamaño inicial",
+        options=size_options,
+        index=0,
+        format_func=lambda s: size_labels.get(s, s),
+        key="save_dash_qc_size",
+    )
+
+    col_ok, col_cancel = st.columns(2)
+    with col_ok:
+        if st.button("Guardar", type="primary", use_container_width=True, key="save_dash_qc_confirm"):
+            if not selected_cards:
+                st.warning("Selecciona al menos una tarjeta.")
+                return
+
+            target_profile = selected_profile
+            if new_profile_name.strip():
+                created = st.session_state.db_manager.create_dashboard_profile(new_profile_name.strip())
+                if not created:
+                    st.error("No se pudo crear el perfil nuevo.")
+                    return
+                target_profile = created['profile_key']
+
+            card_map = {c.get('id'): c for c in cards if c.get('id')}
+            base_order = _next_profile_order(target_profile)
+            saved = 0
+            for idx, card_id in enumerate(selected_cards):
+                card = card_map.get(card_id)
+                if not card:
+                    continue
+                title = f"{card.get('batch', 'Total')} · {card.get('var', 'Variable')}"
+                payload = {
+                    'tile_type': 'quick_card',
+                    'quick_card': _to_jsonable(card),
+                    'layout': {
+                        'size': _normalize_tile_size(qc_size),
+                        'order': base_order + idx,
+                    },
+                }
+                chart_id = st.session_state.db_manager.save_dashboard_chart_snapshot(
+                    profile_key=target_profile,
+                    chart_title=title,
+                    figure_json="",
+                    config_payload=payload,
+                )
+                if chart_id:
+                    saved += 1
+
+            st.session_state.current_profile = target_profile
+            st.session_state.pending_dashboard_quick_cards = None
+            if saved > 0:
+                st.success(f"Se agregaron {saved} tarjetas rápidas al Dashboard.")
+                st.rerun()
+            else:
+                st.error("No se pudo guardar ninguna tarjeta rápida.")
+    with col_cancel:
+        if st.button("Cancelar", use_container_width=True, key="save_dash_qc_cancel"):
+            st.session_state.pending_dashboard_quick_cards = None
+            st.rerun()
+
+
+def _render_quick_dashboard_card(card: dict):
+    if not card:
+        st.info("Tarjeta rápida sin datos.")
+        return
+    label = str(card.get('var', 'Variable'))
+    batch = str(card.get('batch', 'Total'))
+    last = float(card.get('last', 0.0) or 0.0)
+    vmin = float(card.get('min', 0.0) or 0.0)
+    vmax = float(card.get('max', 0.0) or 0.0)
+    vavg = float(card.get('avg', 0.0) or 0.0)
+    last_label = str(card.get('last_label') or '')
+
+    st.markdown(
+        f"""
+<div style="background:linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.28)); border:1px solid rgba(255,255,255,0.10); border-radius:10px; padding:10px 12px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+    <div style="font-size:0.72rem; color:#D8DEE9; font-weight:700;">{batch}</div>
+    <div style="font-size:0.68rem; color:rgba(255,255,255,0.62);">{label}</div>
+  </div>
+  <div style="margin-bottom:8px;">
+    <div style="font-size:0.62rem; color:rgba(255,255,255,0.55);">Último valor {('(' + last_label + ')') if last_label else ''}</div>
+    <div style="font-size:1.2rem; font-weight:700; color:#FAFAFA;">{last:,.3f}</div>
+  </div>
+  <div style="display:flex; justify-content:space-between; gap:8px; font-size:0.70rem;">
+    <div><span style="color:rgba(255,255,255,0.55);">Mín:</span> <b>{vmin:,.3f}</b></div>
+    <div><span style="color:rgba(255,255,255,0.55);">Prom:</span> <b>{vavg:,.3f}</b></div>
+    <div><span style="color:rgba(255,255,255,0.55);">Máx:</span> <b>{vmax:,.3f}</b></div>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_dashboard_content(data_version: str):
     profiles = _load_dashboard_profiles()
     name_map = {p['profile_key']: p.get('profile_name', p['profile_key']) for p in profiles}
@@ -729,39 +1001,91 @@ def _render_dashboard_content(data_version: str):
         current_profile = profiles[0]['profile_key'] if profiles else 'maestro'
         st.session_state.current_profile = current_profile
 
-    st.caption(f"Perfil activo: {name_map.get(current_profile, current_profile)}")
+    st.markdown(
+        """
+<style>
+div.block-container {max-width: 100% !important; padding-left: 0.65rem !important; padding-right: 0.65rem !important;}
+div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; border-color: rgba(160,174,192,0.22) !important; border-radius: 9px !important;}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     charts = st.session_state.db_manager.list_dashboard_profile_charts(current_profile)
     if not charts:
-        st.info("Este perfil no tiene gráficos guardados aún. Ve a la vista principal y usa 'Guardar gráfico en Dashboard'.")
+        st.info("Este perfil no tiene tarjetas guardadas aún. Ve a la vista principal y guarda gráficos o tarjetas rápidas.")
         return
 
-    for idx, item in enumerate(charts, start=1):
-        chart_id = item.get('chart_id', '')
-        title = item.get('chart_title') or f"Gráfico {idx}"
-        updated_at = str(item.get('updated_at') or '')
+    items = _sorted_dashboard_tiles(charts)
 
-        with st.container(border=True):
-            head_col, menu_col = st.columns([10, 1])
-            with head_col:
-                st.markdown(f"**{title}**")
+    if SORTABLES_AVAILABLE:
+        with st.expander("🧲 Ordenar dashboard (arrastrar y soltar)", expanded=False):
+            label_to_id = {}
+            sort_labels = []
+            for idx, item in enumerate(items, start=1):
+                title = item.get('chart_title') or f"Tarjeta {idx}"
+                chart_id = item.get('chart_id', '')
+                label = f"{idx:02d} · {title} · {chart_id[:6]}"
+                label_to_id[label] = chart_id
+                sort_labels.append(label)
+
+            new_order_labels = _sort_items(sort_labels, direction='vertical', key=f"dash_sort_{current_profile}")
+            if st.button("Guardar orden", key=f"dash_save_order_{current_profile}", use_container_width=True):
+                order_ids = [label_to_id.get(lbl) for lbl in new_order_labels if label_to_id.get(lbl)]
+                current_by_id = {it.get('chart_id'): it for it in items}
+                for pos, cid in enumerate(order_ids):
+                    it = current_by_id.get(cid)
+                    if not it:
+                        continue
+                    cfg = copy.deepcopy(it.get('config') or {})
+                    layout = copy.deepcopy(cfg.get('layout') or {})
+                    layout['order'] = pos
+                    layout['size'] = _normalize_tile_size(layout.get('size', 'large'))
+                    cfg['layout'] = layout
+                    st.session_state.db_manager.update_dashboard_chart_config(cid, _to_jsonable(cfg))
+                st.success("Orden guardado.")
+                st.rerun()
+    else:
+        st.caption("Instala `streamlit-sortables` para mover tarjetas arrastrando.")
+
+    rows = _pack_tiles_rows(items)
+
+    for row in rows:
+        widths = [span for _, span in row]
+        cols = st.columns(widths, gap='small')
+        for col, (item, _span) in zip(cols, row):
+            with col:
+                chart_id = item.get('chart_id', '')
+                title = item.get('chart_title') or "Tarjeta"
+                updated_at = str(item.get('updated_at') or '')
+                tooltip = title
                 if updated_at:
-                    st.caption(f"Actualizado: {updated_at[:19]}")
-            with menu_col:
-                if st.button("⋯", key=f"dash_menu_{chart_id}", help="Editar configuración"):
-                    show_dashboard_chart_settings_dialog(chart_id, data_version)
+                    tooltip = f"{title}\nActualizado: {updated_at[:19]}"
 
-            fig_json = item.get('figure_json') or ''
-            if not fig_json:
-                st.warning("Este gráfico no tiene snapshot válido.")
-                continue
+                with st.container(border=True):
+                    menu_col, body_col = st.columns([1, 18])
+                    with menu_col:
+                        if st.button("⋯", key=f"dash_menu_{chart_id}", help=tooltip):
+                            show_dashboard_chart_settings_dialog(chart_id, data_version)
 
-            try:
-                fig = pio.from_json(fig_json)
-                chart_key = f"dash_chart_{_cache_key({'id': chart_id, 'u': updated_at})}"
-                st.plotly_chart(fig, use_container_width=True, key=chart_key)
-            except Exception as e:
-                st.error(f"No se pudo renderizar el snapshot: {e}")
+                    cfg = item.get('config') or {}
+                    tile_type = str(cfg.get('tile_type') or 'chart')
+                    with body_col:
+                        if tile_type == 'quick_card':
+                            _render_quick_dashboard_card(cfg.get('quick_card') or {})
+                            continue
+
+                        fig_json = item.get('figure_json') or ''
+                        if not fig_json:
+                            st.warning("Este gráfico no tiene snapshot válido.")
+                            continue
+
+                        try:
+                            fig = pio.from_json(fig_json)
+                            chart_key = f"dash_chart_{_cache_key({'id': chart_id, 'u': updated_at})}"
+                            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+                        except Exception as e:
+                            st.error(f"No se pudo renderizar el snapshot: {e}")
 
 
 def process_uploaded_files(uploaded_files, button_label: str, button_key: str):
@@ -1439,25 +1763,33 @@ def main():
                         title_suffix = "..." if len(actual_chart_vars) > 3 else ""
                         chart_title = f"{chart_type} · {', '.join(title_vars)}{title_suffix}" if title_vars else f"{chart_type}"
 
-                        if st.button("➕ Guardar gráfico en Dashboard", key="save_chart_snapshot_btn", use_container_width=True):
-                            st.session_state.pending_dashboard_snapshot = {
-                                'chart_title': chart_title,
-                                'figure_json': fig.to_json(),
-                                'config': {
-                                    'filters': copy.deepcopy(filters),
-                                    'selected_vars': list(selected_vars),
-                                    'chart_vars': list(chart_vars),
-                                    'actual_chart_vars': list(actual_chart_vars),
-                                    'chart_type': chart_type,
-                                    'overlay_on': bool(overlay_on),
-                                    'unite_vars': bool(unite_vars),
-                                    'align_first': bool(align_first),
-                                    'fcr_view_mode': st.session_state.get('fcr_view_mode', 'Vista general'),
-                                    'pie_view_mode': st.session_state.get('pie_view_mode', 'parents'),
-                                    'proyecciones_vars': list(filters.get('proyecciones_vars', [])),
-                                },
-                            }
-                            show_save_chart_dialog()
+                        bcol1, bcol2 = st.columns(2)
+                        with bcol1:
+                            if st.button("➕ Guardar gráfico en Dashboard", key="save_chart_snapshot_btn", use_container_width=True):
+                                st.session_state.pending_dashboard_snapshot = {
+                                    'chart_title': chart_title,
+                                    'figure_json': fig.to_json(),
+                                    'config': {
+                                        'tile_type': 'chart',
+                                        'layout': {'size': 'large', 'order': 0},
+                                        'filters': copy.deepcopy(filters),
+                                        'selected_vars': list(selected_vars),
+                                        'chart_vars': list(chart_vars),
+                                        'actual_chart_vars': list(actual_chart_vars),
+                                        'chart_type': chart_type,
+                                        'overlay_on': bool(overlay_on),
+                                        'unite_vars': bool(unite_vars),
+                                        'align_first': bool(align_first),
+                                        'fcr_view_mode': st.session_state.get('fcr_view_mode', 'Vista general'),
+                                        'pie_view_mode': st.session_state.get('pie_view_mode', 'parents'),
+                                        'proyecciones_vars': list(filters.get('proyecciones_vars', [])),
+                                    },
+                                }
+                                show_save_chart_dialog()
+                        with bcol2:
+                            if st.button("➕ Agregar tarjetas rápidas", key="save_quick_cards_dashboard_btn", use_container_width=True, disabled=not quick_cards):
+                                st.session_state.pending_dashboard_quick_cards = copy.deepcopy(quick_cards)
+                                show_save_quick_cards_dialog()
                         
                     except Exception as e:
                         st.error(f"Error al generar gráfico: {str(e)}")
