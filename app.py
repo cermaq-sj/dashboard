@@ -13,7 +13,6 @@ from src.config_params import render_config_tab, get_range_filters, get_alias_ma
 from src.styles import inject_styles, inject_logo, show_loading_screen, hide_loading_screen, show_view_transition
 import traceback
 import unicodedata
-import base64
 
 try:
     from streamlit_plotly_events import plotly_events as _plotly_events
@@ -649,11 +648,6 @@ def _build_plotly_iframe_srcdoc(figure_json: str) -> str:
     )
 
 
-def _html_to_data_uri(doc: str) -> str:
-    encoded = base64.b64encode(str(doc or '').encode('utf-8')).decode('ascii')
-    return f"data:text/html;base64,{encoded}"
-
-
 def _quick_card_html(card: dict) -> str:
     if not card:
         return "<div style='padding:8px;color:#ddd;'>Tarjeta sin datos</div>"
@@ -1183,6 +1177,9 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
     )
 
     charts = st.session_state.db_manager.list_dashboard_profile_charts(current_profile)
+    st.caption(
+        f"Perfil: {name_map.get(current_profile, current_profile)} | Tarjetas guardadas: {len(charts)} | Modo: {'Grid' if ELEMENTS_AVAILABLE else 'Fallback'}"
+    )
     if not charts:
         st.info("Este perfil no tiene tarjetas guardadas aún. Ve a la vista principal y guarda gráficos o tarjetas rápidas.")
         return
@@ -1301,9 +1298,8 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
                             + _quick_card_html(cfg.get('quick_card') or {})
                             + "</body></html>"
                         )
-                        card_src = _html_to_data_uri(card_doc)
                         html.iframe(
-                            src=card_src,
+                            srcDoc=card_doc,
                             sandbox='allow-scripts allow-same-origin',
                             css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
                         )
@@ -1314,9 +1310,8 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
                         else:
                             try:
                                 srcdoc = _build_plotly_iframe_srcdoc(fig_json)
-                                chart_src = _html_to_data_uri(srcdoc)
                                 html.iframe(
-                                    src=chart_src,
+                                    srcDoc=srcdoc,
                                     sandbox='allow-scripts allow-same-origin',
                                     css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
                                 )

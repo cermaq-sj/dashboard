@@ -3,6 +3,7 @@ import re
 import unicodedata
 import json
 import uuid
+from pathlib import Path
 from collections.abc import Mapping
 from urllib.parse import quote
 
@@ -139,8 +140,24 @@ class DBManager:
             self.connection_error = 'missing_motherduck_token'
 
         self.connection_mode = 'local'
-        self.connected_db = ':memory:'
-        return duckdb.connect(database=':memory:')
+        local_db_path = self._sanitize_secret(
+            self._load_secret_value('LOCAL_DUCKDB_PATH')
+            or self._load_secret_value('DUCKDB_PATH')
+        )
+        if not local_db_path:
+            local_db_path = str((Path.cwd() / 'dashboard_local.duckdb').resolve())
+
+        try:
+            con = duckdb.connect(database=local_db_path)
+            self.connected_db = local_db_path
+            self.connection_error = self.connection_error or 'using_local_duckdb_file'
+            print(f"Using local DuckDB file: {local_db_path}")
+            return con
+        except Exception as e:
+            self.connected_db = ':memory:'
+            self.connection_error = f"local_duckdb_file_error:{type(e).__name__}:{str(e)[:120]}"
+            print(f"Local file DB failed, falling back to memory: {self.connection_error}")
+            return duckdb.connect(database=':memory:')
 
     def _normalize(self, value) -> str:
         txt = unicodedata.normalize('NFKD', str(value)).encode('ascii', 'ignore').decode('ascii')
