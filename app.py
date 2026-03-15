@@ -639,7 +639,7 @@ def _persist_profile_layout(profile_key: str, items: list, layout_payload: list)
 @st.cache_data(ttl=300, max_entries=128, show_spinner=False)
 def _build_plotly_iframe_srcdoc(figure_json: str) -> str:
     fig = pio.from_json(str(figure_json or '{}'))
-    fig_html = fig.to_html(include_plotlyjs='cdn', full_html=False, config={'displaylogo': False, 'responsive': True})
+    fig_html = fig.to_html(include_plotlyjs=True, full_html=False, config={'displaylogo': False, 'responsive': True})
     return (
         "<html><head><meta charset='utf-8'><style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:transparent;}"
         "#wrap{height:100%;width:100%;}</style></head><body><div id='wrap'>"
@@ -1308,6 +1308,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
                                 srcdoc = _build_plotly_iframe_srcdoc(fig_json)
                                 html.iframe(
                                     srcDoc=srcdoc,
+                                    sandbox='allow-scripts allow-same-origin',
                                     css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
                                 )
                             except Exception as e:
