@@ -22,15 +22,12 @@ except Exception:
     PLOTLY_EVENTS_AVAILABLE = False
 
 try:
-    from streamlit_elements import elements, dashboard, mui, html, sync
-    ELEMENTS_AVAILABLE = True
+    import importlib
+    _sort_items = importlib.import_module('streamlit_sortables').sort_items
+    SORTABLES_AVAILABLE = True
 except Exception:
-    elements = None
-    dashboard = None
-    mui = None
-    html = None
-    sync = None
-    ELEMENTS_AVAILABLE = False
+    _sort_items = None
+    SORTABLES_AVAILABLE = False
 
 
 def safe_plotly_events(fig, key: str):
@@ -446,111 +443,64 @@ def _build_snapshot_figure(snapshot_cfg: dict, data_version: str, kpi_thresholds
     return fig, None
 
 
-DASH_COLS = 12
-DASH_ROW_HEIGHT = 46
-DASH_GAP = 8
-
-
-def _safe_int(value, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
+SIZE_TO_SPAN = {
+    'small': 3,
+    'medium': 6,
+    'large': 9,
+    'full': 12,
+}
 
 
 def _normalize_tile_size(value: str) -> str:
     v = str(value or '').strip().lower()
-    return v if v in {'small', 'medium', 'large', 'full'} else 'large'
+    return v if v in SIZE_TO_SPAN else 'large'
 
 
-def _size_to_default_wh(size_name: str, tile_type: str):
-    s = _normalize_tile_size(size_name)
-    if s == 'small':
-        return 3, 4 if tile_type == 'quick_card' else 6
-    if s == 'medium':
-        return 6, 5 if tile_type == 'quick_card' else 7
-    if s == 'full':
-        return 12, 6 if tile_type == 'quick_card' else 8
-    return 9, 5 if tile_type == 'quick_card' else 7
+def _tile_span(item: dict) -> int:
+    cfg = item.get('config') or {}
+    layout = cfg.get('layout') or {}
+    return int(SIZE_TO_SPAN.get(_normalize_tile_size(layout.get('size')), 9))
 
 
-def _layout_signature(layout_map: dict) -> str:
-    normalized = {}
-    for k, v in (layout_map or {}).items():
-        normalized[str(k)] = {
-            'x': _safe_int((v or {}).get('x'), 0),
-            'y': _safe_int((v or {}).get('y'), 0),
-            'w': _safe_int((v or {}).get('w'), 6),
-            'h': _safe_int((v or {}).get('h'), 6),
-        }
-    return _cache_key(normalized)
+def _tile_order(item: dict, fallback: int) -> int:
+    cfg = item.get('config') or {}
+    layout = cfg.get('layout') or {}
+    try:
+        return int(layout.get('order'))
+    except Exception:
+        return fallback
 
 
-def _ensure_grid_layout(profile_key: str, items: list) -> list:
+def _sorted_dashboard_tiles(items: list) -> list:
     prepared = []
     for idx, item in enumerate(items):
         cpy = copy.deepcopy(item)
         cfg = cpy.get('config') or {}
         cpy['config'] = cfg
-        layout = copy.deepcopy(cfg.get('layout') or {})
-        cfg['layout'] = layout
-        layout.setdefault('order', idx)
-        cfg.setdefault('tile_type', 'chart')
-        prepared.append(cpy)
-
-    prepared.sort(key=lambda it: _safe_int(((it.get('config') or {}).get('layout') or {}).get('order'), 999999))
-
-    changed = []
-    cursor_x = 0
-    cursor_y = 0
-    row_h = 0
-
-    for idx, item in enumerate(prepared):
-        cfg = item.get('config') or {}
-        tile_type = str(cfg.get('tile_type') or 'chart')
         layout = cfg.get('layout') or {}
-        width_default, height_default = _size_to_default_wh(layout.get('size', 'large'), tile_type)
-
-        has_xywh = all(k in layout for k in ['x', 'y', 'w', 'h'])
-        if has_xywh:
-            x = max(0, min(DASH_COLS - 1, _safe_int(layout.get('x'), 0)))
-            y = max(0, _safe_int(layout.get('y'), 0))
-            w = max(2, min(DASH_COLS, _safe_int(layout.get('w'), width_default)))
-            h = max(3, _safe_int(layout.get('h'), height_default))
-        else:
-            w = width_default
-            h = height_default
-            if cursor_x + w > DASH_COLS:
-                cursor_x = 0
-                cursor_y += max(1, row_h)
-                row_h = 0
-            x = cursor_x
-            y = cursor_y
-            cursor_x += w
-            row_h = max(row_h, h)
-
-        new_layout = {
-            'x': x,
-            'y': y,
-            'w': w,
-            'h': h,
-            'size': _normalize_tile_size(layout.get('size', 'large')),
-            'order': idx,
-        }
-
-        if _layout_signature({'a': layout}) != _layout_signature({'a': new_layout}):
-            changed.append((item.get('chart_id', ''), cfg, new_layout))
-
-        cfg['layout'] = new_layout
-
-    for chart_id, cfg, new_layout in changed:
-        if not chart_id:
-            continue
-        cfg_to_save = copy.deepcopy(cfg)
-        cfg_to_save['layout'] = new_layout
-        st.session_state.db_manager.update_dashboard_chart_config(chart_id, _to_jsonable(cfg_to_save))
-
+        cfg['layout'] = layout
+        layout.setdefault('size', 'large')
+        layout.setdefault('order', idx)
+        prepared.append(cpy)
+    prepared.sort(key=lambda it: _tile_order(it, 999999))
     return prepared
+
+
+def _pack_tiles_rows(items: list) -> list:
+    rows = []
+    cur = []
+    used = 0
+    for item in items:
+        span = max(1, min(12, _tile_span(item)))
+        if cur and (used + span > 12):
+            rows.append(cur)
+            cur = []
+            used = 0
+        cur.append((item, span))
+        used += span
+    if cur:
+        rows.append(cur)
+    return rows
 
 
 def _next_profile_order(profile_key: str) -> int:
@@ -558,124 +508,9 @@ def _next_profile_order(profile_key: str) -> int:
     if not items:
         return 0
     max_order = -1
-    for item in items:
-        cfg = item.get('config') or {}
-        layout = cfg.get('layout') or {}
-        max_order = max(max_order, _safe_int(layout.get('order'), 0))
+    for idx, item in enumerate(items):
+        max_order = max(max_order, _tile_order(item, idx))
     return int(max_order + 1)
-
-
-def _extract_layout_payload(event_payload):
-    if event_payload is None:
-        return []
-    if isinstance(event_payload, list):
-        if event_payload and isinstance(event_payload[0], dict) and 'i' in event_payload[0]:
-            return event_payload
-        if event_payload and isinstance(event_payload[0], list):
-            first = event_payload[0]
-            if first and isinstance(first[0], dict) and 'i' in first[0]:
-                return first
-    if isinstance(event_payload, dict):
-        if 'lg' in event_payload and isinstance(event_payload['lg'], list):
-            return event_payload['lg']
-    return []
-
-
-def _persist_profile_layout(profile_key: str, items: list, layout_payload: list):
-    if not layout_payload:
-        return False
-
-    by_id = {}
-    for raw in layout_payload:
-        item_id = str(raw.get('i') or '')
-        if not item_id:
-            continue
-        by_id[item_id] = {
-            'x': max(0, min(DASH_COLS - 1, _safe_int(raw.get('x'), 0))),
-            'y': max(0, _safe_int(raw.get('y'), 0)),
-            'w': max(2, min(DASH_COLS, _safe_int(raw.get('w'), 6))),
-            'h': max(3, _safe_int(raw.get('h'), 6)),
-        }
-
-    if not by_id:
-        return False
-
-    cache_key = f"dash_layout_sig_{profile_key}"
-    new_sig = _layout_signature(by_id)
-    if st.session_state.get(cache_key) == new_sig:
-        return False
-
-    changed = False
-    for order_idx, item in enumerate(sorted(layout_payload, key=lambda x: (_safe_int(x.get('y'), 0), _safe_int(x.get('x'), 0)))):
-        chart_id = str(item.get('i') or '')
-        if not chart_id:
-            continue
-        existing = next((it for it in items if str(it.get('chart_id')) == chart_id), None)
-        if not existing:
-            continue
-        cfg = copy.deepcopy(existing.get('config') or {})
-        layout = copy.deepcopy(cfg.get('layout') or {})
-        target = by_id.get(chart_id)
-        if not target:
-            continue
-        merged = {
-            'x': target['x'],
-            'y': target['y'],
-            'w': target['w'],
-            'h': target['h'],
-            'size': _normalize_tile_size(layout.get('size', 'large')),
-            'order': order_idx,
-        }
-        if _layout_signature({'a': layout}) == _layout_signature({'a': merged}):
-            continue
-        cfg['layout'] = merged
-        ok = st.session_state.db_manager.update_dashboard_chart_config(chart_id, _to_jsonable(cfg))
-        changed = changed or bool(ok)
-
-    st.session_state[cache_key] = new_sig
-    return changed
-
-
-@st.cache_data(ttl=300, max_entries=128, show_spinner=False)
-def _build_plotly_iframe_srcdoc(figure_json: str) -> str:
-    fig = pio.from_json(str(figure_json or '{}'))
-    fig_html = fig.to_html(include_plotlyjs=True, full_html=False, config={'displaylogo': False, 'responsive': True})
-    return (
-        "<html><head><meta charset='utf-8'><style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:transparent;}"
-        "#wrap{height:100%;width:100%;}</style></head><body><div id='wrap'>"
-        + fig_html
-        + "</div></body></html>"
-    )
-
-
-def _quick_card_html(card: dict) -> str:
-    if not card:
-        return "<div style='padding:8px;color:#ddd;'>Tarjeta sin datos</div>"
-    label = str(card.get('var', 'Variable'))
-    batch = str(card.get('batch', 'Total'))
-    last = float(card.get('last', 0.0) or 0.0)
-    vmin = float(card.get('min', 0.0) or 0.0)
-    vmax = float(card.get('max', 0.0) or 0.0)
-    vavg = float(card.get('avg', 0.0) or 0.0)
-    last_label = str(card.get('last_label') or '')
-    extra = f" ({last_label})" if last_label else ""
-    return f"""
-<div style="height:100%;background:linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.28)); border:1px solid rgba(255,255,255,0.10); border-radius:8px; padding:8px 10px; box-sizing:border-box; color:#f2f2f2; font-family:system-ui, sans-serif;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-    <div style="font-size:0.70rem; color:#D8DEE9; font-weight:700;">{batch}</div>
-    <div style="font-size:0.66rem; color:rgba(255,255,255,0.62);">{label}</div>
-  </div>
-  <div style="margin-bottom:6px;">
-    <div style="font-size:0.60rem; color:rgba(255,255,255,0.55);">Ultimo valor{extra}</div>
-    <div style="font-size:1.05rem; font-weight:700; color:#FAFAFA;">{last:,.3f}</div>
-  </div>
-  <div style="display:flex; justify-content:space-between; gap:6px; font-size:0.68rem;">
-    <div><span style="color:rgba(255,255,255,0.55);">Min:</span> <b>{vmin:,.3f}</b></div>
-    <div><span style="color:rgba(255,255,255,0.55);">Prom:</span> <b>{vavg:,.3f}</b></div>
-    <div><span style="color:rgba(255,255,255,0.55);">Max:</span> <b>{vmax:,.3f}</b></div>
-  </div>
-</div>
-"""
 
 
 @st.cache_data(ttl=600, max_entries=64, show_spinner=False)
@@ -838,10 +673,6 @@ def show_save_chart_dialog():
                     **(pending.get('config') or {}),
                     'tile_type': (pending.get('config') or {}).get('tile_type', 'chart'),
                     'layout': {
-                        'x': 0,
-                        'y': next_order * 8,
-                        'w': 9,
-                        'h': 7,
                         'size': _normalize_tile_size(((pending.get('config') or {}).get('layout') or {}).get('size', 'large')),
                         'order': next_order,
                     },
@@ -872,6 +703,22 @@ def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
     filters = copy.deepcopy(cfg.get('filters') or {})
     tile_type = str(cfg.get('tile_type') or 'chart')
 
+    size_options = ['small', 'medium', 'large', 'full']
+    size_labels = {
+        'small': 'Pequeño (1/4)',
+        'medium': 'Mediano (1/2)',
+        'large': 'Grande (3/4)',
+        'full': 'Pantalla (1/1)',
+    }
+    size_value = _normalize_tile_size(layout.get('size', 'large'))
+    size_selected = st.selectbox(
+        "Tamaño de tarjeta",
+        options=size_options,
+        index=size_options.index(size_value),
+        format_func=lambda s: size_labels.get(s, s),
+        key=f"dash_cfg_size_{chart_id}",
+    )
+
     if tile_type == 'quick_card':
         st.caption("Tarjeta rápida")
         col_ok, col_cancel = st.columns(2)
@@ -880,12 +727,8 @@ def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
                 new_cfg = copy.deepcopy(cfg)
                 new_cfg['tile_type'] = 'quick_card'
                 new_cfg['layout'] = {
-                    'x': _safe_int(layout.get('x'), 0),
-                    'y': _safe_int(layout.get('y'), 0),
-                    'w': _safe_int(layout.get('w'), 3),
-                    'h': _safe_int(layout.get('h'), 4),
-                    'size': _normalize_tile_size(layout.get('size', 'small')),
-                    'order': _safe_int(layout.get('order'), 0),
+                    'size': _normalize_tile_size(size_selected),
+                    'order': int(layout.get('order', 0)),
                 }
                 ok = st.session_state.db_manager.update_dashboard_chart_config(chart_id, _to_jsonable(new_cfg))
                 if ok:
@@ -983,12 +826,8 @@ def show_dashboard_chart_settings_dialog(chart_id: str, data_version: str):
             new_cfg['unite_vars'] = bool(unite_vars)
             new_cfg['align_first'] = bool(align_first)
             new_cfg['layout'] = {
-                'x': _safe_int(layout.get('x'), 0),
-                'y': _safe_int(layout.get('y'), 0),
-                'w': _safe_int(layout.get('w'), 9),
-                'h': _safe_int(layout.get('h'), 7),
-                'size': _normalize_tile_size(layout.get('size', 'large')),
-                'order': _safe_int(layout.get('order'), 0),
+                'size': _normalize_tile_size(size_selected),
+                'order': int(layout.get('order', 0)),
             }
 
             fig, err = _build_snapshot_figure(new_cfg, data_version, kpi_thresholds)
@@ -1093,10 +932,6 @@ def show_save_quick_cards_dialog():
                     'tile_type': 'quick_card',
                     'quick_card': _to_jsonable(card),
                     'layout': {
-                        'x': 0,
-                        'y': (base_order + idx) * 5,
-                        'w': 3,
-                        'h': 4,
                         'size': _normalize_tile_size(qc_size),
                         'order': base_order + idx,
                     },
@@ -1177,160 +1012,80 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
     )
 
     charts = st.session_state.db_manager.list_dashboard_profile_charts(current_profile)
-    st.caption(
-        f"Perfil: {name_map.get(current_profile, current_profile)} | Tarjetas guardadas: {len(charts)} | Modo: {'Grid' if ELEMENTS_AVAILABLE else 'Fallback'}"
-    )
     if not charts:
         st.info("Este perfil no tiene tarjetas guardadas aún. Ve a la vista principal y guarda gráficos o tarjetas rápidas.")
         return
 
-    items = _ensure_grid_layout(current_profile, charts)
+    items = _sorted_dashboard_tiles(charts)
 
-    if not ELEMENTS_AVAILABLE:
-        st.warning("Instala `streamlit-elements` para mover tarjetas desde ⋯ y redimensionarlas desde la esquina inferior derecha.")
-        for item in items:
-            chart_id = item.get('chart_id', '')
-            cfg = item.get('config') or {}
-            layout = cfg.get('layout') or {}
-            title = item.get('chart_title') or 'Tarjeta'
-            updated_at = str(item.get('updated_at') or '')
-            tooltip = title if not updated_at else f"{title} | Actualizado: {updated_at[:19]}"
-            with st.container(border=True):
-                c1, c2 = st.columns([1, 20])
-                with c1:
-                    if st.button("⋯", key=f"dash_menu_fallback_{chart_id}", help=tooltip):
-                        show_dashboard_chart_settings_dialog(chart_id, data_version)
-                with c2:
-                    st.caption(f"x={layout.get('x', 0)} y={layout.get('y', 0)} w={layout.get('w', 0)} h={layout.get('h', 0)}")
-                    if str(cfg.get('tile_type') or 'chart') == 'quick_card':
-                        _render_quick_dashboard_card(cfg.get('quick_card') or {})
-                    else:
-                        fig_json = item.get('figure_json') or ''
-                        if fig_json:
-                            try:
-                                fig = pio.from_json(fig_json)
-                                st.plotly_chart(fig, use_container_width=True, key=f"dash_chart_fallback_{chart_id}")
-                            except Exception as e:
-                                st.error(f"No se pudo renderizar el snapshot: {e}")
-                        else:
-                            st.warning("Este gráfico no tiene snapshot válido.")
-        return
+    if SORTABLES_AVAILABLE:
+        with st.expander("🧲 Ordenar dashboard (arrastrar y soltar)", expanded=False):
+            label_to_id = {}
+            sort_labels = []
+            for idx, item in enumerate(items, start=1):
+                title = item.get('chart_title') or f"Tarjeta {idx}"
+                chart_id = item.get('chart_id', '')
+                label = f"{idx:02d} · {title} · {chart_id[:6]}"
+                label_to_id[label] = chart_id
+                sort_labels.append(label)
 
-    layout_event_key = f"dash_layout_event_{current_profile}"
-    grid_items = []
-    for item in items:
-        chart_id = str(item.get('chart_id') or '')
-        layout = (item.get('config') or {}).get('layout') or {}
-        grid_items.append(
-            dashboard.Item(
-                chart_id,
-                _safe_int(layout.get('x'), 0),
-                _safe_int(layout.get('y'), 0),
-                _safe_int(layout.get('w'), 9),
-                _safe_int(layout.get('h'), 7),
-                minW=2,
-                minH=3,
-                resizeHandles=['se'],
-            )
-        )
+            new_order_labels = _sort_items(sort_labels, direction='vertical', key=f"dash_sort_{current_profile}")
+            if st.button("Guardar orden", key=f"dash_save_order_{current_profile}", use_container_width=True):
+                order_ids = [label_to_id.get(lbl) for lbl in new_order_labels if label_to_id.get(lbl)]
+                current_by_id = {it.get('chart_id'): it for it in items}
+                for pos, cid in enumerate(order_ids):
+                    it = current_by_id.get(cid)
+                    if not it:
+                        continue
+                    cfg = copy.deepcopy(it.get('config') or {})
+                    layout = copy.deepcopy(cfg.get('layout') or {})
+                    layout['order'] = pos
+                    layout['size'] = _normalize_tile_size(layout.get('size', 'large'))
+                    cfg['layout'] = layout
+                    st.session_state.db_manager.update_dashboard_chart_config(cid, _to_jsonable(cfg))
+                st.success("Orden guardado.")
+                st.rerun()
+    else:
+        st.caption("Instala `streamlit-sortables` para mover tarjetas arrastrando.")
 
-    with elements(f"dash_elements_{current_profile}"):
-        with dashboard.Grid(
-            grid_items,
-            cols=DASH_COLS,
-            rowHeight=DASH_ROW_HEIGHT,
-            margin=[DASH_GAP, DASH_GAP],
-            containerPadding=[0, 0],
-            compactType='vertical',
-            preventCollision=False,
-            isDraggable=True,
-            isResizable=True,
-            draggableHandle='.dash-drag-handle',
-            onDragStop=sync(layout_event_key),
-            onResizeStop=sync(layout_event_key),
-        ):
-            for item in items:
-                chart_id = str(item.get('chart_id') or '')
-                cfg = item.get('config') or {}
-                layout = cfg.get('layout') or {}
-                tile_type = str(cfg.get('tile_type') or 'chart')
-                title = item.get('chart_title') or 'Tarjeta'
+    rows = _pack_tiles_rows(items)
+
+    for row in rows:
+        widths = [span for _, span in row]
+        cols = st.columns(widths, gap='small')
+        for col, (item, _span) in zip(cols, row):
+            with col:
+                chart_id = item.get('chart_id', '')
+                title = item.get('chart_title') or "Tarjeta"
                 updated_at = str(item.get('updated_at') or '')
-                tooltip = title if not updated_at else f"{title} | Actualizado: {updated_at[:19]}"
-                menu_evt_key = f"dash_menu_evt_{chart_id}"
+                tooltip = title
+                if updated_at:
+                    tooltip = f"{title}\nActualizado: {updated_at[:19]}"
 
-                total_h_px = max(140, _safe_int(layout.get('h'), 7) * DASH_ROW_HEIGHT + max(0, _safe_int(layout.get('h'), 7) - 1) * DASH_GAP)
-                body_h_px = max(90, total_h_px - 30)
+                with st.container(border=True):
+                    menu_col, body_col = st.columns([1, 18])
+                    with menu_col:
+                        if st.button("⋯", key=f"dash_menu_{chart_id}", help=tooltip):
+                            show_dashboard_chart_settings_dialog(chart_id, data_version)
 
-                with mui.Paper(
-                    key=chart_id,
-                    elevation=0,
-                    square=False,
-                    sx={
-                        "height": "100%",
-                        "overflow": "hidden",
-                        "border": "1px solid rgba(160,174,192,0.22)",
-                        "borderRadius": "8px",
-                        "background": "rgba(11,16,24,0.45)",
-                    },
-                ):
-                    with mui.Box(sx={"height": "28px", "display": "flex", "alignItems": "center", "pl": "2px"}):
-                        with mui.Tooltip(title=tooltip, enterDelay=1000, placement='right'):
-                            mui.IconButton(
-                                "⋯",
-                                className='dash-drag-handle',
-                                onClick=sync(menu_evt_key),
-                                size='small',
-                                sx={
-                                    "fontSize": "0.95rem",
-                                    "color": "#D9DEE7",
-                                    "cursor": "grab",
-                                    "minWidth": "24px",
-                                    "height": "24px",
-                                    "width": "24px",
-                                    "p": 0,
-                                },
-                            )
+                    cfg = item.get('config') or {}
+                    tile_type = str(cfg.get('tile_type') or 'chart')
+                    with body_col:
+                        if tile_type == 'quick_card':
+                            _render_quick_dashboard_card(cfg.get('quick_card') or {})
+                            continue
 
-                    if tile_type == 'quick_card':
-                        card_doc = (
-                            "<html><head><meta charset='utf-8'><style>html,body{margin:0;padding:0;height:100%;background:transparent;}</style></head><body>"
-                            + _quick_card_html(cfg.get('quick_card') or {})
-                            + "</body></html>"
-                        )
-                        html.iframe(
-                            srcDoc=card_doc,
-                            sandbox='allow-scripts allow-same-origin',
-                            css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
-                        )
-                    else:
                         fig_json = item.get('figure_json') or ''
                         if not fig_json:
-                            html.div("Snapshot inválido", css={"padding": "8px", "color": "#f8d7da"})
-                        else:
-                            try:
-                                srcdoc = _build_plotly_iframe_srcdoc(fig_json)
-                                html.iframe(
-                                    srcDoc=srcdoc,
-                                    sandbox='allow-scripts allow-same-origin',
-                                    css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
-                                )
-                            except Exception as e:
-                                html.div(f"No se pudo renderizar: {e}", css={"padding": "8px", "color": "#f8d7da"})
+                            st.warning("Este gráfico no tiene snapshot válido.")
+                            continue
 
-    layout_payload = _extract_layout_payload(st.session_state.get(layout_event_key))
-    if layout_payload:
-        st.session_state[layout_event_key] = None
-        if _persist_profile_layout(current_profile, items, layout_payload):
-            st.rerun()
-
-    for item in items:
-        chart_id = str(item.get('chart_id') or '')
-        evt_key = f"dash_menu_evt_{chart_id}"
-        if st.session_state.get(evt_key):
-            st.session_state[evt_key] = None
-            show_dashboard_chart_settings_dialog(chart_id, data_version)
-            break
+                        try:
+                            fig = pio.from_json(fig_json)
+                            chart_key = f"dash_chart_{_cache_key({'id': chart_id, 'u': updated_at})}"
+                            st.plotly_chart(fig, use_container_width=True, key=chart_key)
+                        except Exception as e:
+                            st.error(f"No se pudo renderizar el snapshot: {e}")
 
 
 def process_uploaded_files(uploaded_files, button_label: str, button_key: str):

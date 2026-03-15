@@ -5,4 +5,4 @@ plotly
 openpyxl
 xlrd
 streamlit-plotly-events
-streamlit-elements==0.1.*
+streamlit-sortables
