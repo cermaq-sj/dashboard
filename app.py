@@ -13,6 +13,7 @@ from src.config_params import render_config_tab, get_range_filters, get_alias_ma
 from src.styles import inject_styles, inject_logo, show_loading_screen, hide_loading_screen, show_view_transition
 import traceback
 import unicodedata
+import base64
 
 try:
     from streamlit_plotly_events import plotly_events as _plotly_events
@@ -646,6 +647,11 @@ def _build_plotly_iframe_srcdoc(figure_json: str) -> str:
         + fig_html
         + "</div></body></html>"
     )
+
+
+def _html_to_data_uri(doc: str) -> str:
+    encoded = base64.b64encode(str(doc or '').encode('utf-8')).decode('ascii')
+    return f"data:text/html;base64,{encoded}"
 
 
 def _quick_card_html(card: dict) -> str:
@@ -1295,8 +1301,10 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
                             + _quick_card_html(cfg.get('quick_card') or {})
                             + "</body></html>"
                         )
+                        card_src = _html_to_data_uri(card_doc)
                         html.iframe(
-                            srcDoc=card_doc,
+                            src=card_src,
+                            sandbox='allow-scripts allow-same-origin',
                             css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
                         )
                     else:
@@ -1306,8 +1314,9 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-width: 1px !important; b
                         else:
                             try:
                                 srcdoc = _build_plotly_iframe_srcdoc(fig_json)
+                                chart_src = _html_to_data_uri(srcdoc)
                                 html.iframe(
-                                    srcDoc=srcdoc,
+                                    src=chart_src,
                                     sandbox='allow-scripts allow-same-origin',
                                     css={"width": "100%", "height": f"{body_h_px}px", "border": "none", "display": "block"},
                                 )
